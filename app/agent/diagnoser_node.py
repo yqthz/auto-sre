@@ -3,8 +3,8 @@ import json
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from app.agent.state import AgentState
+from app.core.logger import logger
 from app.prompts.diagnoser_system_prompt import DIAGNOSER_SYSTEM_PROMPT
-from app.tools.docker_tools import docker_tools
 from app.tools.tool_manager import get_agent_tools
 from app.utils.llm_utils import get_llm
 
@@ -24,10 +24,14 @@ def diagnoser_node(state: AgentState):
     tools = get_agent_tools(
         user_role="viewer",
         mode="auto",
-        tags=["docker", "ssh", "shell"]
+        tags=["docker"]
     )
 
-    chain = prompt | llm.bind_tools(tools)
+    logger.info(f"tools: {tools}")
+
+    llm_with_tools = llm.bind_tools(tools)
+
+    chain = prompt | llm_with_tools
 
     response = chain.invoke({"history": messages, "alert_info": alert_context_str})
 

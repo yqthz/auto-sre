@@ -4,6 +4,7 @@ from langgraph.graph import StateGraph
 from langgraph.prebuilt import ToolNode
 
 from app.agent.diagnoser_node import diagnoser_node
+from app.agent.notification_node import notification_node
 from app.agent.reporter_node import reporter_node
 from app.agent.sre_agent import sre_node
 from app.agent.state import AgentState
@@ -47,7 +48,9 @@ def create_graph():
     builder.add_node("diagnoser", diagnoser_node)
     builder.add_node("sre_agent", sre_node)
     builder.add_node("reporter", reporter_node)
+    builder.add_node("notification", notification_node)
     builder.add_node("tools", ToolNode(ALL_TOOLS_LIST))
+
 
     builder.set_conditional_entry_point(
         entry_router,
@@ -84,7 +87,10 @@ def create_graph():
         }
     )
 
-    builder.add_edge("reporter", END)
+    # builder.add_edge("reporter", END)
+
+    builder.add_edge("reporter", "notification")
+    builder.add_edge("notification", END)
 
     memory = MemorySaver()
 

@@ -1,6 +1,8 @@
 from typing import List
 
+from app.core.logger import logger
 from app.tools.security import TOOL_REGISTRY
+import app.tools.docker_tools
 
 
 def get_agent_tools(user_role: str = "viewer", mode: str = "auto", tags: List[str] = None):
@@ -11,6 +13,8 @@ def get_agent_tools(user_role: str = "viewer", mode: str = "auto", tags: List[st
     :param tags: 如果只想获取特定类型的工具 (如只取 ['docker'])
     """
     selected_tools = []
+
+    logger.info(f"tool registry: {TOOL_REGISTRY}")
 
     for name, meta in TOOL_REGISTRY.items():
         if user_role not in meta["roles"]:

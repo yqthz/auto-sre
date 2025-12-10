@@ -4,6 +4,8 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from app.core.config import settings
 from app.core.logger import logger
 
+
+
 _global_embeddings = None
 _global_llm = None
 

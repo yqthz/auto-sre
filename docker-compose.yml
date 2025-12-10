@@ -32,6 +32,21 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  minio:
+    image: minio/minio
+    container_name: minio-server
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=123456
+    command: server /data --console-address ":9001"
+    volumes:
+      - ./minio_data:/data
+    networks:
+      - monitoring
+
 networks:
   monitoring:
     driver: bridge

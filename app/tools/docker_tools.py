@@ -23,7 +23,8 @@ def check_server_status(container_name: str):
     name="read_server_logs",
     permission="moderate",
     roles=["admin", "sre", "viewer"],
-    param_rules=[("container_name", "prod")]
+    param_rules=[("container_name", "prod")],
+    tags=["docker"]
 )
 def read_server_logs(container_name: str, tail: int = 50):
     """读取服务器日志，用于分析报错原因。"""
@@ -41,7 +42,8 @@ def read_server_logs(container_name: str, tail: int = 50):
     name="restart_server",
     permission="danger",
     roles=["admin"],
-    param_rules=[("container_name", "prod")]
+    param_rules=[("container_name", "prod")],
+    tags=["docker"]
 )
 def restart_server(container_name: str = "target_nginx"):
     """重启服务器。只有在确定服务挂掉或需要重启时调用。"""
@@ -57,6 +59,7 @@ def restart_server(container_name: str = "target_nginx"):
     name="check_system_metrics",
     permission="info",
     roles=["admin", "sre", "viewer"],
+    tags=["docker"]
 )
 def check_system_metrics(container_name: str):
     """获取容器的 CPU 和 内存使用率。"""
@@ -75,7 +78,8 @@ def check_system_metrics(container_name: str):
     name="exec_command_in_container",
     permission="moderate",
     roles=["admin", "sre", "viewer"],
-    param_rules=[("container_name", "prod")]
+    param_rules=[("container_name", "prod")],
+    tags=["docker"]
 )
 def exec_command_in_container(container_name: str, command: str):
     """
@@ -110,7 +114,8 @@ def exec_command_in_container(container_name: str, command: str):
 @register_tool(
     name="read_file_content",
     permission="moderate",
-    roles=["admin", "sre", "viewer"]
+    roles=["admin", "sre", "viewer"],
+    tags=["docker"]
 )
 def read_file_content(target: str, file_path: str, line_limit: int = 50):
     """
@@ -123,7 +128,8 @@ def read_file_content(target: str, file_path: str, line_limit: int = 50):
 @register_tool(
     name="check_process_list",
     permission="info",
-    roles=["admin", "sre", "viewer"]
+    roles=["admin", "sre", "viewer"],
+    tags=["docker"]
 )
 def check_process_list(target: str, grep_keyword: str = ""):
     """
