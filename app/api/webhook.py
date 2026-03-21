@@ -1,15 +1,15 @@
 from typing import Optional, Dict
 
-from fastapi import FastAPI, BackgroundTasks
-from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
+from fastapi import APIRouter, BackgroundTasks
+from langchain_core.messages import HumanMessage, ToolMessage, AIMessage
 
 from app.agent.graph import create_graph, SENSITIVE_TOOLS
+from app.agent.tools.security import after_tool_execution, before_tool_execution
 from app.core.logger import logger
 from app.schema.alert_info import WebhookPayload
-from app.tools.security import before_tool_execution, after_tool_execution
 from app.utils.format_utils import gen_id
 
-app = FastAPI()
+router = APIRouter()
 graph = create_graph()
 
 AUTO_BOT_USER_ID = "system_autobot"
@@ -99,7 +99,8 @@ def run_agent(thread_id: str, initial_input: Optional[Dict] = None):
             logger.error(f"Thread {thread_id}: Error in execution loop - {e}", exc_info=True)
             break
 
-@app.post("/webhook/alertmanager")
+
+@router.post("/alertmanager")
 async def receive_alert(request: WebhookPayload, background_tasks: BackgroundTasks):
     """
     接收 Alertmanager 告警，立即返回，后台处理。

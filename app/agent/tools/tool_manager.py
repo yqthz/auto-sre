@@ -1,8 +1,7 @@
 from typing import List
 
 from app.core.logger import logger
-from app.tools.security import TOOL_REGISTRY
-import app.tools.docker_tools
+from app.agent.tools.security import TOOL_REGISTRY
 
 
 def get_agent_tools(user_role: str = "viewer", mode: str = "auto", tags: List[str] = None):

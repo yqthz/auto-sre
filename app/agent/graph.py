@@ -3,12 +3,12 @@ from langgraph.constants import END
 from langgraph.graph import StateGraph
 from langgraph.prebuilt import ToolNode
 
-from app.agent.diagnoser_node import diagnoser_node
-from app.agent.notification_node import notification_node
-from app.agent.reporter_node import reporter_node
-from app.agent.sre_agent import sre_node
+from app.agent.nodes.diagnoser_node import diagnoser_node
+from app.agent.nodes.notification_node import notification_node
+from app.agent.nodes.reporter_node import reporter_node
+from app.agent.nodes.sre_agent import sre_node
 from app.agent.state import AgentState
-from app.tools.security import TOOL_REGISTRY
+from app.agent.tools.security import TOOL_REGISTRY
 
 SENSITIVE_TOOLS = ["restart_server"]
 ALL_TOOLS_LIST = [meta["fn"] for meta in TOOL_REGISTRY.values()]

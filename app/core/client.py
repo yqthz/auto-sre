@@ -1,4 +1,3 @@
-import chromadb
 from minio import Minio, S3Error
 
 from app.core.config import settings
@@ -12,4 +11,3 @@ if not minio_client.bucket_exists(settings.MINIO_BUCKET):
         logger.warning(f'Could not create bucket {settings.MINIO_BUCKET}: {e}')
 
 
-client = chromadb.PersistentClient(path="./sre_knowledge_db")

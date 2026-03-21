@@ -1,7 +1,7 @@
 from langchain_core.messages import SystemMessage
 
-from app.prompts.sre_system_prompt import SRE_COPILOT_SYSTEM_PROMPT
-from app.tools.tool_manager import get_agent_tools
+from app.agent.prompts.sre_system_prompt import SRE_COPILOT_SYSTEM_PROMPT
+from app.agent.tools.tool_manager import get_agent_tools
 from app.utils.llm_utils import get_llm
 
 llm = get_llm()

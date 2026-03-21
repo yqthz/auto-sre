@@ -1,7 +1,7 @@
 import shlex
 
-from app.tools.security import register_tool
-from app.tools.ssh_tools import run_ssh_cmd
+from app.agent.tools.security import register_tool
+from app.agent.tools.ssh_tools import run_ssh_cmd
 
 
 

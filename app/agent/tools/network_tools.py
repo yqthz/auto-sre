@@ -1,5 +1,5 @@
-from app.tools.docker_tools import exec_command_in_container
-from app.tools.security import register_tool
+from app.agent.tools.docker_tools import exec_command_in_container
+from app.agent.tools.security import register_tool
 
 
 @register_tool(

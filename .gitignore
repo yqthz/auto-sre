@@ -12,3 +12,7 @@ wheels/
 .env
 
 .idea
+
+docs/
+process.txt
+CLAUDE.md

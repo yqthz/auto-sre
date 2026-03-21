@@ -1,6 +1,6 @@
 import json
 
-from app.tools.security import register_tool
+from app.agent.tools.security import register_tool
 
 CMDB_DATA = {
     "payment-service": {

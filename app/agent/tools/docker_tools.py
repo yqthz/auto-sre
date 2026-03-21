@@ -1,6 +1,6 @@
 import docker
 
-from app.tools.security import register_tool, validate_shell_command
+from app.agent.tools.security import register_tool, validate_shell_command
 
 client = docker.from_env()
 
