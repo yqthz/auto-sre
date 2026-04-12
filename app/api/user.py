@@ -37,7 +37,7 @@ async def get_current_user_info(
     return UserResponse.model_validate(current_user)
 
 
-@router.get("/users", response_model=UserListResponse)
+@router.get("", response_model=UserListResponse)
 async def get_users(
     skip: int = Query(0, ge=0, description="跳过的记录数"),
     limit: int = Query(50, ge=1, le=100, description="返回的记录数"),
@@ -102,7 +102,7 @@ async def get_users(
     )
 
 
-@router.get("/users/{user_id}", response_model=UserResponse)
+@router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
     user_id: int,
     current_user: User = Depends(deps.get_current_active_user),
@@ -125,7 +125,7 @@ async def get_user(
     return UserResponse.model_validate(user)
 
 
-@router.post("/users", response_model=UserResponse)
+@router.post("", response_model=UserResponse)
 async def create_user(
     user_in: UserCreate,
     request: Request,
@@ -186,7 +186,7 @@ async def create_user(
     return UserResponse.model_validate(user)
 
 
-@router.put("/users/{user_id}", response_model=UserResponse)
+@router.put("/{user_id}", response_model=UserResponse)
 async def update_user(
     user_id: int,
     user_update: UserUpdate,
@@ -284,7 +284,7 @@ async def update_user(
     return UserResponse.model_validate(user)
 
 
-@router.delete("/users/{user_id}")
+@router.delete("/{user_id}")
 async def delete_user(
     user_id: int,
     request: Request,

@@ -56,25 +56,6 @@ def restart_server(container_name: str = "target_nginx"):
         return f"Failed to restart: {str(e)}"
 
 @register_tool(
-    name="check_system_metrics",
-    permission="info",
-    roles=["admin", "sre", "viewer"],
-    tags=["docker"]
-)
-def check_system_metrics(container_name: str):
-    """获取容器的 CPU 和 内存使用率。"""
-    try:
-        container = client.containers.get(container_name)
-        stats = container.stats(stream=False)
-
-        cpu_usage = stats['cpu_usage']['cpu_usage']['total_usage']
-        memory_usage = stats['memory_usage']['usage']
-        return f"CPU Usage: {cpu_usage}, Memory: {memory_usage} bytes"
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@register_tool(
     name="exec_command_in_container",
     permission="moderate",
     roles=["admin", "sre", "viewer"],

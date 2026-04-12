@@ -1,10 +1,11 @@
-import os
-
 import uvicorn
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from app.api import auth, webhook, chat_session, chat_message, knowledge_base, document, user, monitoring
+from app.api import auth, webhook, chat_session, chat_message, knowledge_base, document, user, alert
+from app.core.logger import configure_logging
+
+configure_logging()
 
 app = FastAPI(title="auto-sre", version="1.0.0")
 
@@ -15,7 +16,7 @@ app.include_router(chat_message.router, prefix='/api/v1/chat', tags=["chat"])
 app.include_router(knowledge_base.router, prefix='/api/v1/rag', tags=["rag"])
 app.include_router(document.router, prefix='/api/v1/rag', tags=["rag"])
 app.include_router(user.router, prefix='/api/v1/users', tags=["users"])
-app.include_router(monitoring.router, tags=["monitoring"])
+app.include_router(alert.router, prefix='/api/v1', tags=["alerts"])
 
 app.add_middleware(
 CORSMiddleware,

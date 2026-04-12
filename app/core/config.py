@@ -7,6 +7,9 @@ class Settings(BaseSettings):
 
     # embedding model
     EMBEDDING_MODEL: str
+    EMBEDDING_API_KEY: str | None = None
+    EMBEDDING_BASE_URL: str | None = None
+    EMBEDDING_DIMENSIONS: int | None = 1024
 
     # smtp
     SMTP_HOST: str
@@ -24,6 +27,10 @@ class Settings(BaseSettings):
 
     # database
     DATABASE_URL: str
+    SQL_ECHO: bool = False
+
+    # logging
+    LOG_LEVEL: str = "INFO"
 
     # Prometheus
     PROMETHEUS_URL: str = "http://localhost:9090"

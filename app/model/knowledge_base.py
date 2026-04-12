@@ -100,8 +100,8 @@ class DocumentChunk(Base):
     content = Column(Text, nullable=False)
 
     # 向量嵌入（使用 pgvector）
-    # 维度根据 embedding 模型决定，例如 bge-small-zh-v1.5 是 512 维
-    embedding = Column(Vector(512), nullable=True)
+    # 维度根据 embedding 模型决定
+    embedding = Column(Vector(1024), nullable=True)
 
     # 元数据（JSON 格式，存储额外信息）
     # 例如：{"page": 1, "section": "Introduction"}

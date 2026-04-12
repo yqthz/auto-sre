@@ -131,7 +131,7 @@ class DocumentService:
                     chunk_index=i,
                     content=chunk_text,
                     embedding=embedding,
-                    metadata=f'{{"chunk_index": {i}, "source": "{document.filename}"}}'
+                    metadata_=f'{{"chunk_index": {i}, "source": "{document.filename}"}}'
                 )
                 db.add(chunk)
 

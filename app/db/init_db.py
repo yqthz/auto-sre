@@ -7,15 +7,17 @@ from app.core.config import settings
 from app.model.user import Base, User
 from app.model.audit_log import AuditLog
 from app.model.chat import ChatSession, ChatMessage
+from app.model.alert_event import AlertEvent
 from app.model.knowledge_base import KnowledgeBase, Document, DocumentChunk
-from app.core.logger import logger
+from app.core.logger import configure_logging, logger
 
 
 async def init_db():
     """初始化数据库表"""
+    configure_logging()
     logger.info("Creating database tables...")
 
-    engine = create_async_engine(settings.DATABASE_URL, echo=True)
+    engine = create_async_engine(settings.DATABASE_URL, echo=settings.SQL_ECHO)
 
     async with engine.begin() as conn:
         # 创建所有表
