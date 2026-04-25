@@ -9,8 +9,8 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.graph import SENSITIVE_TOOLS, create_graph
-from app.agent.tools.security import after_tool_execution, before_tool_execution
+from app.agent.graph import create_graph
+from app.agent.tools.security import after_tool_execution, before_tool_execution, is_sensitive_tool
 from app.api import deps
 from app.core.logger import logger
 from app.db.session import AsyncSessionLocal
@@ -114,8 +114,7 @@ def run_agent(
     initial_input: Optional[Dict] = None,
 ):
     """
-    后台任务：驱动 Agent 自动运行。
-    """
+    鍚庡彴浠诲姟锛氶┍锟?Agent 鑷姩杩愯锟?    """
     config = {"configurable": {"thread_id": thread_id}}
     current_input = initial_input
     success = True
@@ -159,6 +158,7 @@ def run_agent(
                                 args=tc["args"],
                                 user_id=AUTO_BOT_USER_ID,
                                 user_role=AUTO_BOT_ROLE,
+                                mode="auto",
                             )
                         except PermissionError as e:
                             logger.error(f"Security check failed for {tc['name']}: {e}")
@@ -177,7 +177,7 @@ def run_agent(
                         continue
 
                     tool_names = [t["name"] for t in tool_calls]
-                    has_sensitive_tool = any(name in SENSITIVE_TOOLS for name in tool_names)
+                    has_sensitive_tool = any(is_sensitive_tool(name) for name in tool_names)
 
                     if has_sensitive_tool:
                         logger.warning(f"Thread {thread_id}: Paused for sensitive tools: {tool_names}")
@@ -212,8 +212,7 @@ async def receive_alert(
     db: AsyncSession = Depends(deps.get_db),
 ):
     """
-    接收 Alertmanager 告警，立即返回，后台处理。
-    """
+    鎺ユ敹 Alertmanager 鍛婅锛岀珛鍗宠繑鍥烇紝鍚庡彴澶勭悊锟?    """
     alerts = request.alerts
     logger.info(f"Received {len(alerts)} alerts")
 
@@ -236,10 +235,14 @@ async def receive_alert(
                 thread_id = gen_id("thread")
                 alert_context = alert.model_dump() if hasattr(alert, "model_dump") else dict(alert)
                 initial_state = {
-                    "user_role": AUTO_BOT_ROLE,
-                    "mode": "auto",
-                    "alert_context": alert_context,
-                    "messages": [HumanMessage(content=f"鏀跺埌鏂板憡璀︼紝璇峰紑濮嬭嚜鍔ㄦ帓鏌? {alert.labels}")],
+                "user_role": AUTO_BOT_ROLE,
+                "mode": "auto",
+                "alert_context": alert_context,
+                "evidence": [],
+                "hypotheses": [],
+                "approval_requests": [],
+                "actions_executed": [],
+                "messages": [HumanMessage(content=f"閺€璺哄煂閺傛澘鎲＄拃锔肩礉鐠囧嘲绱戞慨瀣殰閸斻劍甯撻弻? {alert.labels}")],
                 }
                 logger.info(
                     "Alert fingerprint exists, but duplicate-skip is temporarily disabled: "
@@ -296,7 +299,11 @@ async def receive_alert(
                 "user_role": AUTO_BOT_ROLE,
                 "mode": "auto",
                 "alert_context": alert_context,
-                "messages": [HumanMessage(content=f"收到新告警，请开始自动排查: {alert.labels}")],
+                    "evidence": [],
+                    "hypotheses": [],
+                    "approval_requests": [],
+                    "actions_executed": [],
+                    "messages": [HumanMessage(content=f"鏀跺埌鏂板憡璀︼紝璇峰紑濮嬭嚜鍔ㄦ帓锟? {alert.labels}")],
             }
 
             event = AlertEvent(
@@ -337,3 +344,6 @@ async def receive_alert(
             await db.commit()
 
     return {"status": "accepted", "msg": "Investigation started in background"}
+
+
+

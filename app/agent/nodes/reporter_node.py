@@ -2,8 +2,8 @@ import json
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
-from app.agent.state import AgentState
 from app.agent.prompts.report_system_prompt import REPORTER_SYSTEM_PROMPT
+from app.agent.state import AgentState
 from app.core.logger import logger
 from app.utils.llm_utils import get_llm
 
@@ -14,15 +14,35 @@ def reporter_node(state: AgentState):
     messages = state["messages"]
 
     alert_context = state.get("alert_context", {})
-    alert_context_str = json.dumps(alert_context, ensure_ascii=False, indent=2)
+    evidence = state.get("evidence", [])
+    hypotheses = state.get("hypotheses", [])
+    approval_requests = state.get("approval_requests", [])
+    actions_executed = state.get("actions_executed", [])
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", REPORTER_SYSTEM_PROMPT),
-        MessagesPlaceholder(variable_name="history"),
-    ])
+    alert_context_str = json.dumps(alert_context, ensure_ascii=False, indent=2)
+    evidence_str = json.dumps(evidence, ensure_ascii=False, indent=2)
+    hypotheses_str = json.dumps(hypotheses, ensure_ascii=False, indent=2)
+    approval_requests_str = json.dumps(approval_requests, ensure_ascii=False, indent=2)
+    actions_executed_str = json.dumps(actions_executed, ensure_ascii=False, indent=2)
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", REPORTER_SYSTEM_PROMPT),
+            MessagesPlaceholder(variable_name="history"),
+        ]
+    )
 
     chain = prompt | llm
-    response = chain.invoke({"history": messages, "alert_info": alert_context_str})
+    response = chain.invoke(
+        {
+            "history": messages,
+            "alert_info": alert_context_str,
+            "evidence_json": evidence_str,
+            "hypotheses_json": hypotheses_str,
+            "approval_requests_json": approval_requests_str,
+            "actions_executed_json": actions_executed_str,
+        }
+    )
 
     report_text = response.content if isinstance(response.content, str) else str(response.content)
 
@@ -46,11 +66,10 @@ def reporter_node(state: AgentState):
         normalized_report = json.dumps(parsed, ensure_ascii=False)
     except Exception as e:
         logger.error(f"reporter_node produced invalid JSON report: {e}")
-        # Keep raw text for traceability, but persist a valid JSON wrapper.
         fallback = {
-            "summary": "信息不足",
-            "root_cause": "reporter 输出未通过 JSON 校验，请查看 raw_text。",
-            "recommendations": ["检查告警上下文和工具输出后重试分析"],
+            "summary": "insufficient information",
+            "root_cause": "reporter output did not pass JSON validation, see raw_text",
+            "recommendations": ["check alert context and tool outputs, then retry analysis"],
             "raw_text": report_text,
             "error": str(e),
         }
@@ -58,5 +77,9 @@ def reporter_node(state: AgentState):
 
     return {
         "report": normalized_report,
-        "messages": [response]
+        "messages": [response],
+        "evidence": evidence,
+        "hypotheses": hypotheses,
+        "approval_requests": approval_requests,
+        "actions_executed": actions_executed,
     }

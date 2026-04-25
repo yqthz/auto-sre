@@ -3,16 +3,15 @@ AI Chat 消息服务层
 处理消息发送、Agent 执行、流式响应等核心逻辑
 """
 import json
-from datetime import datetime
-from typing import AsyncGenerator, Dict, Any, Optional
+from datetime import datetime, timezone
+from typing import AsyncGenerator, Dict, Any, Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 from app.model.chat import ChatSession, ChatMessage
-from app.model.audit_log import AuditLog
-from app.agent.graph import create_graph, SENSITIVE_TOOLS
-from app.agent.tools.security import before_tool_execution, after_tool_execution, TOOL_REGISTRY
+from app.agent.graph import create_graph
+from app.agent.tools.security import TOOL_REGISTRY, is_sensitive_tool
 from app.core.logger import logger
 
 
@@ -103,7 +102,7 @@ class ChatService:
         display += "\n```\n\n"
 
         # 如果是敏感工具，显示警告
-        if tool_name in SENSITIVE_TOOLS:
+        if is_sensitive_tool(tool_name):
             display += "⚠️ **这是一个危险操作，需要您的授权！**\n\n"
 
         return display
@@ -131,6 +130,107 @@ class ChatService:
             return f"```bash\n{command}\n```"
         return None
 
+    @staticmethod
+    def _utc_now_iso() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _build_approval_request(self, tool_call: dict) -> dict:
+        tool_name = tool_call.get("name", "unknown")
+        args = tool_call.get("args", {})
+        tool_meta = TOOL_REGISTRY.get(tool_name, {})
+        permission = tool_meta.get("permission", "unknown")
+        risk_level = "high" if permission == "danger" else ("medium" if permission == "limited" else "low")
+
+        return {
+            "approval_id": tool_call.get("id"),
+            "tool_call_id": tool_call.get("id"),
+            "tool_name": tool_name,
+            "args": args,
+            "permission": permission,
+            "risk_level": risk_level,
+            "impact": f"execute tool `{tool_name}` with provided args in manual mode",
+            "rollback": "not_provided",
+            "shell_command": self.format_shell_command_display(tool_name, args),
+            "status": "pending",
+            "created_at": self._utc_now_iso(),
+        }
+
+    @staticmethod
+    def _append_state_item(snapshot_values: dict, field: str, item: dict) -> List[dict]:
+        current = snapshot_values.get(field, [])
+        if not isinstance(current, list):
+            current = []
+        return [*current, item]
+
+    def _find_pending_sensitive_tool_call(self, snapshot_values: dict) -> Optional[dict]:
+        last_message = (snapshot_values.get("messages") or [None])[-1]
+        if isinstance(last_message, AIMessage) and last_message.tool_calls:
+            for tc in last_message.tool_calls:
+                if is_sensitive_tool(tc.get("name", "")):
+                    return tc
+        return None
+
+    def record_approval_outcome(
+        self,
+        session: ChatSession,
+        status: str,
+        approved: bool,
+        actor_id: int,
+        actor_role: str,
+        reason: Optional[str] = None,
+    ) -> Optional[dict]:
+        config = {"configurable": {"thread_id": session.thread_id}}
+        snapshot = self.graph.get_state(config)
+        snapshot_values = snapshot.values or {}
+        pending_tool_call = self._find_pending_sensitive_tool_call(snapshot_values)
+        if not pending_tool_call:
+            return None
+
+        tool_call_id = pending_tool_call.get("id")
+        approval_requests = snapshot_values.get("approval_requests", [])
+        if not isinstance(approval_requests, list):
+            approval_requests = []
+
+        updated_requests = []
+        for item in approval_requests:
+            if not isinstance(item, dict):
+                updated_requests.append(item)
+                continue
+            if item.get("tool_call_id") != tool_call_id:
+                updated_requests.append(item)
+                continue
+            next_item = dict(item)
+            next_item["status"] = status
+            next_item["updated_at"] = self._utc_now_iso()
+            if reason:
+                next_item["reason"] = reason
+            updated_requests.append(next_item)
+
+        action_record = {
+            "tool_call_id": tool_call_id,
+            "tool_name": pending_tool_call.get("name"),
+            "args": pending_tool_call.get("args", {}),
+            "status": status,
+            "approved": approved,
+            "executed": False,
+            "reason": reason,
+            "actor_id": str(actor_id),
+            "actor_role": actor_role,
+            "timestamp": self._utc_now_iso(),
+        }
+
+        self.graph.update_state(
+            config,
+            {
+                "approval_requests": updated_requests,
+                "actions_executed": self._append_state_item(
+                    snapshot_values, "actions_executed", action_record
+                ),
+            },
+            as_node="tools",
+        )
+        return action_record
+
     async def continue_agent_execution(
         self,
         db: AsyncSession,
@@ -155,6 +255,38 @@ class ChatService:
                     "user_role": user_role
                 }
             }
+            snapshot = self.graph.get_state(config)
+            snapshot_values = snapshot.values or {}
+            last_message = (snapshot_values.get("messages") or [None])[-1]
+
+            pending_tool_call = None
+            if isinstance(last_message, AIMessage) and last_message.tool_calls:
+                for tc in last_message.tool_calls:
+                    if is_sensitive_tool(tc.get("name", "")):
+                        pending_tool_call = tc
+                        break
+
+            pending_tool_call_id = pending_tool_call.get("id") if pending_tool_call else None
+            approval_requests = snapshot_values.get("approval_requests", [])
+            if not isinstance(approval_requests, list):
+                approval_requests = []
+
+            def mark_approval_status(status: str, reason: Optional[str] = None) -> List[dict]:
+                updated = []
+                for item in approval_requests:
+                    if not isinstance(item, dict):
+                        updated.append(item)
+                        continue
+                    if item.get("tool_call_id") != pending_tool_call_id:
+                        updated.append(item)
+                        continue
+                    next_item = dict(item)
+                    next_item["status"] = status
+                    next_item["updated_at"] = self._utc_now_iso()
+                    if reason:
+                        next_item["reason"] = reason
+                    updated.append(next_item)
+                return updated
 
             if not approved:
                 # 拒绝执行：注入拒绝消息
@@ -168,6 +300,30 @@ class ChatService:
                     {"messages": [HumanMessage(content=reject_msg)]},
                     as_node="tools"  # 作为 tools 节点的输出
                 )
+
+                if pending_tool_call:
+                    action_record = {
+                        "tool_call_id": pending_tool_call.get("id"),
+                        "tool_name": pending_tool_call.get("name"),
+                        "args": pending_tool_call.get("args", {}),
+                        "status": "rejected",
+                        "approved": False,
+                        "reason": rejection_reason,
+                        "executed": False,
+                        "timestamp": self._utc_now_iso(),
+                    }
+                    self.graph.update_state(
+                        config,
+                        {
+                            "approval_requests": mark_approval_status(
+                                "rejected", reason=rejection_reason
+                            ),
+                            "actions_executed": self._append_state_item(
+                                snapshot_values, "actions_executed", action_record
+                            )
+                        },
+                        as_node="tools",
+                    )
 
                 yield {
                     "event": "tool_rejected",
@@ -201,6 +357,27 @@ class ChatService:
 
             else:
                 # 批准执行：继续执行工具
+                if pending_tool_call:
+                    action_record = {
+                        "tool_call_id": pending_tool_call.get("id"),
+                        "tool_name": pending_tool_call.get("name"),
+                        "args": pending_tool_call.get("args", {}),
+                        "status": "approved",
+                        "approved": True,
+                        "executed": False,
+                        "timestamp": self._utc_now_iso(),
+                    }
+                    self.graph.update_state(
+                        config,
+                        {
+                            "approval_requests": mark_approval_status("approved"),
+                            "actions_executed": self._append_state_item(
+                                snapshot_values, "actions_executed", action_record
+                            )
+                        },
+                        as_node="tools",
+                    )
+
                 yield {
                     "event": "tool_approved",
                     "data": {"message": "工具调用已批准，正在执行..."}
@@ -213,6 +390,26 @@ class ChatService:
 
                         # 工具执行结果
                         if isinstance(last_message, ToolMessage):
+                            tool_action = {
+                                "tool_call_id": last_message.tool_call_id,
+                                "tool_name": last_message.name,
+                                "status": "executed",
+                                "approved": True,
+                                "executed": True,
+                                "result_preview": str(last_message.content)[:500],
+                                "timestamp": self._utc_now_iso(),
+                            }
+                            current_values = self.graph.get_state(config).values or {}
+                            self.graph.update_state(
+                                config,
+                                {
+                                    "actions_executed": self._append_state_item(
+                                        current_values, "actions_executed", tool_action
+                                    )
+                                },
+                                as_node="tools",
+                            )
+
                             yield {
                                 "event": "tool_call_result",
                                 "data": {
@@ -244,10 +441,21 @@ class ChatService:
                             if last_message.tool_calls:
                                 for tool_call in last_message.tool_calls:
                                     tool_name = tool_call["name"]
-                                    is_sensitive = tool_name in SENSITIVE_TOOLS
+                                    is_sensitive = is_sensitive_tool(tool_name)
 
                                     if is_sensitive:
                                         # 又遇到敏感工具，再次暂停
+                                        approval_request = self._build_approval_request(tool_call)
+                                        current_values = self.graph.get_state(config).values or {}
+                                        self.graph.update_state(
+                                            config,
+                                            {
+                                                "approval_requests": self._append_state_item(
+                                                    current_values, "approval_requests", approval_request
+                                                )
+                                            },
+                                            as_node="sre_agent",
+                                        )
                                         tool_display = self.format_tool_call_display(tool_call)
                                         shell_command = self.format_shell_command_display(
                                             tool_name, tool_call["args"]
@@ -262,7 +470,8 @@ class ChatService:
                                                 "display": tool_display,
                                                 "shell_command": shell_command,
                                                 "is_sensitive": True,
-                                                "requires_approval": True
+                                                "requires_approval": True,
+                                                "approval_request": approval_request,
                                             }
                                         }
 
@@ -271,7 +480,7 @@ class ChatService:
                                             session.id,
                                             "assistant",
                                             content=last_message.content,
-                                            tool_calls=[tool_call],
+                                            tool_calls=[{**tool_call, "approval_request": approval_request}],
                                             requires_approval=True,
                                             status="pending"
                                         )
@@ -284,7 +493,8 @@ class ChatService:
                                             "data": {
                                                 "tool_call_id": tool_call["id"],
                                                 "tool_name": tool_name,
-                                                "message": f"需要您的授权才能执行 {tool_name}"
+                                                "message": f"需要您的授权才能执行 {tool_name}",
+                                                "approval_request": approval_request,
                                             }
                                         }
                                         return
@@ -357,7 +567,11 @@ class ChatService:
             initial_input = {
                 "messages": [HumanMessage(content=user_message)],
                 "user_role": user_role,
-                "mode": session.mode
+                "mode": session.mode,
+                "evidence": [],
+                "hypotheses": [],
+                "approval_requests": [],
+                "actions_executed": [],
             }
 
             # 4. 流式执行 Agent
@@ -391,7 +605,7 @@ class ChatService:
                                 args = tool_call["args"]
 
                                 # 检查是否是敏感工具
-                                is_sensitive = tool_name in SENSITIVE_TOOLS
+                                is_sensitive = is_sensitive_tool(tool_name)
 
                                 # 格式化工具调用展示
                                 tool_display = self.format_tool_call_display(tool_call)
@@ -412,13 +626,24 @@ class ChatService:
 
                                 # 如果是敏感工具，暂停并等待授权
                                 if is_sensitive:
+                                    approval_request = self._build_approval_request(tool_call)
+                                    current_values = self.graph.get_state(config).values or {}
+                                    self.graph.update_state(
+                                        config,
+                                        {
+                                            "approval_requests": self._append_state_item(
+                                                current_values, "approval_requests", approval_request
+                                            )
+                                        },
+                                        as_node="sre_agent",
+                                    )
                                     # 保存 AI 消息（包含工具调用）
                                     await self.save_message(
                                         db,
                                         session.id,
                                         "assistant",
                                         content=assistant_message_content,
-                                        tool_calls=[tool_call],
+                                        tool_calls=[{**tool_call, "approval_request": approval_request}],
                                         requires_approval=True,
                                         status="pending"
                                     )
@@ -432,7 +657,8 @@ class ChatService:
                                         "data": {
                                             "tool_call_id": tool_call["id"],
                                             "tool_name": tool_name,
-                                            "message": f"需要您的授权才能执行 {tool_name}"
+                                            "message": f"需要您的授权才能执行 {tool_name}",
+                                            "approval_request": approval_request,
                                         }
                                     }
 

@@ -10,7 +10,6 @@ from app.agent.nodes.sre_agent import sre_node
 from app.agent.state import AgentState
 from app.agent.tools.security import TOOL_REGISTRY
 
-SENSITIVE_TOOLS = ["restart_server"]
 ALL_TOOLS_LIST = [meta["fn"] for meta in TOOL_REGISTRY.values()]
 
 def entry_router(state: AgentState):

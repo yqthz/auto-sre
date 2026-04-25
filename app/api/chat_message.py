@@ -1,27 +1,85 @@
 """
-AI Chat 消息 API
-处理消息发送、获取历史消息、流式响应等
+AI Chat message APIs.
 """
 import json
+from datetime import datetime, timezone
 from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
+from app.agent.approval_policy import APPROVAL_TTL_SECONDS, check_approval_permission
+from app.agent.tools.security import TOOL_REGISTRY
 from app.api import deps
+from app.core.logger import logger
+from app.model.audit_log import AuditLog
+from app.model.chat import ChatMessage, ChatSession
 from app.model.user import User
-from app.model.chat import ChatSession, ChatMessage
 from app.schema.chat import (
     ChatMessageCreate,
-    ChatMessageResponse,
     ChatMessageListResponse,
-    ToolApprovalRequest
+    ChatMessageResponse,
+    ToolApprovalRequest,
 )
 from app.service.chat_service import chat_service
-from app.core.logger import logger
 
 router = APIRouter()
+
+
+def _extract_approval_request(message: ChatMessage) -> dict:
+    tool_calls = message.tool_calls or []
+    if isinstance(tool_calls, list) and tool_calls:
+        first_call = tool_calls[0]
+        if isinstance(first_call, dict):
+            request = first_call.get("approval_request")
+            if isinstance(request, dict):
+                return request
+
+            tool_name = first_call.get("name") or message.tool_name or "unknown"
+            tool_meta = TOOL_REGISTRY.get(tool_name, {})
+            permission = tool_meta.get("permission", "unknown")
+            risk_level = (
+                "high" if permission == "danger"
+                else ("medium" if permission == "limited" else "low")
+            )
+            return {
+                "tool_call_id": first_call.get("id"),
+                "tool_name": tool_name,
+                "permission": permission,
+                "risk_level": risk_level,
+                "args": first_call.get("args", {}),
+            }
+    return {}
+
+
+async def _write_approval_audit(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    message: ChatMessage,
+    decision_status: str,
+    detail_extra: dict,
+):
+    approval_request = _extract_approval_request(message)
+    audit = AuditLog(
+        user_id=str(current_user.id),
+        user_role=current_user.role,
+        event_type="approval_decision",
+        tool_name=message.tool_name or approval_request.get("tool_name"),
+        tool_permission=approval_request.get("permission"),
+        status=decision_status,
+        details={
+            "message_id": message.id,
+            "session_id": message.session_id,
+            "approval_request": approval_request,
+            "decided_at": datetime.now(timezone.utc).isoformat(),
+            **detail_extra,
+        },
+    )
+    db.add(audit)
+    await db.commit()
 
 
 @router.get("/sessions/{session_id}/messages", response_model=ChatMessageListResponse)
@@ -30,13 +88,11 @@ async def get_messages(
     skip: int = 0,
     limit: int = 100,
     current_user: User = Depends(deps.get_current_active_user),
-    db: AsyncSession = Depends(deps.get_db)
+    db: AsyncSession = Depends(deps.get_db),
 ):
-    """获取会话的历史消息"""
-    # 验证会话所有权
     session_query = select(ChatSession).where(
         ChatSession.id == session_id,
-        ChatSession.user_id == current_user.id
+        ChatSession.user_id == current_user.id,
     )
     session_result = await db.execute(session_query)
     session = session_result.scalars().first()
@@ -44,7 +100,6 @@ async def get_messages(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # 获取消息
     query = (
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
@@ -55,17 +110,17 @@ async def get_messages(
     result = await db.execute(query)
     messages = result.scalars().all()
 
-    # 统计总数
     from sqlalchemy import func
+
     count_query = select(func.count(ChatMessage.id)).where(
-        ChatMessage.session_id == session_id
+        ChatMessage.session_id == session_id,
     )
     total_result = await db.execute(count_query)
     total = total_result.scalar()
 
     return ChatMessageListResponse(
         messages=[ChatMessageResponse.model_validate(msg) for msg in messages],
-        total=total
+        total=total,
     )
 
 
@@ -74,29 +129,11 @@ async def send_message_stream(
     session_id: int,
     message_in: ChatMessageCreate,
     current_user: User = Depends(deps.get_current_active_user),
-    db: AsyncSession = Depends(deps.get_db)
+    db: AsyncSession = Depends(deps.get_db),
 ):
-    """
-    发送消息并流式返回 Agent 响应（SSE 格式）
-
-    返回 Server-Sent Events (SSE) 流，事件格式：
-    event: <event_type>
-    data: <json_data>
-
-    事件类型：
-    - user_message: 用户消息已保存
-    - agent_thinking: Agent 正在思考
-    - agent_message_delta: Agent 消息增量
-    - tool_call_start: 工具调用开始
-    - tool_call_result: 工具调用结果
-    - tool_approval_required: 需要用户授权
-    - agent_message_complete: Agent 消息完成
-    - error: 错误
-    """
-    # 验证会话所有权
     session_query = select(ChatSession).where(
         ChatSession.id == session_id,
-        ChatSession.user_id == current_user.id
+        ChatSession.user_id == current_user.id,
     )
     session_result = await db.execute(session_query)
     session = session_result.scalars().first()
@@ -107,30 +144,25 @@ async def send_message_stream(
     if session.status == "waiting":
         raise HTTPException(
             status_code=400,
-            detail="Session is waiting for tool approval. Please approve or reject first."
+            detail="Session is waiting for tool approval. Please approve or reject first.",
         )
 
     async def event_generator():
-        """SSE 事件生成器"""
         try:
             async for event in chat_service.stream_agent_response(
                 db=db,
                 session=session,
                 user_message=message_in.content,
                 user_id=current_user.id,
-                user_role=current_user.role
+                user_role=current_user.role,
             ):
                 event_type = event["event"]
                 event_data = event["data"]
-
-                # 格式化为 SSE
                 yield f"event: {event_type}\n"
                 yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
 
-            # 发送结束标记
             yield "event: done\n"
             yield "data: {}\n\n"
-
         except Exception as e:
             logger.error(f"Error in event_generator: {e}", exc_info=True)
             yield "event: error\n"
@@ -142,8 +174,8 @@ async def send_message_stream(
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"  # 禁用 Nginx 缓冲
-        }
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -153,18 +185,11 @@ async def approve_tool_call(
     message_id: int,
     approval: ToolApprovalRequest,
     current_user: User = Depends(deps.get_current_active_user),
-    db: AsyncSession = Depends(deps.get_db)
+    db: AsyncSession = Depends(deps.get_db),
 ):
-    """
-    授权或拒绝工具调用（流式返回继续执行的结果）
-
-    用于敏感工具（如 restart_server）的人工审批
-    返回 SSE 流，继续执行 Agent
-    """
-    # 验证会话所有权
     session_query = select(ChatSession).where(
         ChatSession.id == session_id,
-        ChatSession.user_id == current_user.id
+        ChatSession.user_id == current_user.id,
     )
     session_result = await db.execute(session_query)
     session = session_result.scalars().first()
@@ -172,10 +197,9 @@ async def approve_tool_call(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # 获取消息
     message_query = select(ChatMessage).where(
         ChatMessage.id == message_id,
-        ChatMessage.session_id == session_id
+        ChatMessage.session_id == session_id,
     )
     message_result = await db.execute(message_query)
     message = message_result.scalars().first()
@@ -189,29 +213,87 @@ async def approve_tool_call(
     if message.approval_status != "pending":
         raise HTTPException(status_code=400, detail="This message has already been processed")
 
-    # 更新授权状态
+    approval_request = _extract_approval_request(message)
+    risk_level = approval_request.get("risk_level", "high")
+    tool_name = approval_request.get("tool_name") or message.tool_name
+
+    created_at = message.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
+    if age_seconds > APPROVAL_TTL_SECONDS:
+        message.approval_status = "rejected"
+        session.status = "active"
+        await db.commit()
+
+        chat_service.record_approval_outcome(
+            session=session,
+            status="expired",
+            approved=False,
+            actor_id=current_user.id,
+            actor_role=current_user.role,
+            reason=f"approval expired after {int(age_seconds)}s",
+        )
+        await _write_approval_audit(
+            db,
+            current_user=current_user,
+            message=message,
+            decision_status="expired",
+            detail_extra={
+                "approved": False,
+                "reason": f"approval expired after {int(age_seconds)}s",
+                "risk_level": risk_level,
+                "ttl_seconds": APPROVAL_TTL_SECONDS,
+            },
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"Approval request expired after {APPROVAL_TTL_SECONDS} seconds.",
+        )
+
+    allowed, deny_reason = check_approval_permission(
+        risk_level,
+        current_user.role,
+        tool_name=tool_name,
+    )
+    if not allowed:
+        chat_service.record_approval_outcome(
+            session=session,
+            status="policy_denied",
+            approved=False,
+            actor_id=current_user.id,
+            actor_role=current_user.role,
+            reason=deny_reason,
+        )
+        await _write_approval_audit(
+            db,
+            current_user=current_user,
+            message=message,
+            decision_status="policy_denied",
+            detail_extra={
+                "approved": False,
+                "reason": deny_reason,
+                "risk_level": risk_level,
+            },
+        )
+        raise HTTPException(status_code=403, detail=deny_reason)
+
     message.approval_status = "approved" if approval.approved else "rejected"
     session.status = "active"
     await db.commit()
 
-    # 记录审计日志
-    from app.model.audit_log import AuditLog
-    audit = AuditLog(
-        user_id=str(current_user.id),
-        user_role=current_user.role,
-        event_type="tool_approval",
-        tool_name=message.tool_name,
-        status="approved" if approval.approved else "rejected",
-        details={
-            "message_id": message_id,
-            "tool_calls": message.tool_calls,
-            "reason": approval.reason
-        }
+    await _write_approval_audit(
+        db,
+        current_user=current_user,
+        message=message,
+        decision_status="approved" if approval.approved else "rejected",
+        detail_extra={
+            "approved": approval.approved,
+            "reason": approval.reason,
+            "risk_level": risk_level,
+        },
     )
-    db.add(audit)
-    await db.commit()
 
-    # 流式返回继续执行的结果
     async def event_generator():
         try:
             async for event in chat_service.continue_agent_execution(
@@ -220,17 +302,15 @@ async def approve_tool_call(
                 user_id=current_user.id,
                 user_role=current_user.role,
                 approved=approval.approved,
-                rejection_reason=approval.reason
+                rejection_reason=approval.reason,
             ):
                 event_type = event["event"]
                 event_data = event["data"]
-
                 yield f"event: {event_type}\n"
                 yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
 
             yield "event: done\n"
             yield "data: {}\n\n"
-
         except Exception as e:
             logger.error(f"Error in approval event_generator: {e}", exc_info=True)
             yield "event: error\n"
@@ -242,8 +322,8 @@ async def approve_tool_call(
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -252,13 +332,11 @@ async def delete_message(
     session_id: int,
     message_id: int,
     current_user: User = Depends(deps.get_current_active_user),
-    db: AsyncSession = Depends(deps.get_db)
+    db: AsyncSession = Depends(deps.get_db),
 ):
-    """删除单条消息（仅限用户自己的消息）"""
-    # 验证会话所有权
     session_query = select(ChatSession).where(
         ChatSession.id == session_id,
-        ChatSession.user_id == current_user.id
+        ChatSession.user_id == current_user.id,
     )
     session_result = await db.execute(session_query)
     session = session_result.scalars().first()
@@ -266,10 +344,9 @@ async def delete_message(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # 获取消息
     message_query = select(ChatMessage).where(
         ChatMessage.id == message_id,
-        ChatMessage.session_id == session_id
+        ChatMessage.session_id == session_id,
     )
     message_result = await db.execute(message_query)
     message = message_result.scalars().first()

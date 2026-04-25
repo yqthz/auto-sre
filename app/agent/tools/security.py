@@ -1,7 +1,9 @@
+from typing import Dict, List
+
 from app.storage import append_audit
 from app.utils.format_utils import now_iso
 
-TOOL_REGISTRY = {}
+TOOL_REGISTRY: Dict[str, dict] = {}
 
 SENSITIVE_PATTERNS = ["prod", "payment", "database"]
 
@@ -10,39 +12,60 @@ SAFE_SHELL_COMMANDS = {
     "ps", "netstat", "whoami", "uptime", "free", "df", "du"
 }
 
+
 def validate_shell_command(command: str):
     """
-       深度检查 Shell 命令安全性
-       1. 禁止多条命令拼接 (; && ||)
-       2. 禁止重定向 (>)
-       3. 检查命令动词是否在白名单
-       """
+    Deep security checks for shell command execution.
+    1. Block composed commands (; && ||)
+    2. Block output redirection (>)
+    3. Enforce command verb allow-list
+    """
     if any(char in command for char in [";", "&&", "||", "`", "$("]):
-        raise PermissionError("🚫 禁止执行复合命令或子 shell，请单条执行。")
+        raise PermissionError("Unsafe shell composition is not allowed.")
 
     if ">" in command:
-        raise PermissionError("🚫 禁止文件重定向写入操作。")
+        raise PermissionError("Output redirection is not allowed.")
 
-    # 将命令按管道符拆分，分别检查每一段的动词
     segments = command.split("|")
     for seg in segments:
         seg = seg.strip()
-        if not seg: continue
+        if not seg:
+            continue
 
         verb = seg.split(" ")[0]
         if verb not in SAFE_SHELL_COMMANDS:
-            raise PermissionError(f"🚫 命令 `{verb}` 不在安全白名单中！")
+            raise PermissionError(f"Command `{verb}` is not in safe allow-list.")
 
     return True
 
 
-def security_check(tool_name: str, args: dict, user_role: str):
-    """安全检查逻辑"""
+def get_sensitive_tool_names() -> List[str]:
+    """Return tools that require explicit human approval."""
+    sensitive = []
+    for name, meta in TOOL_REGISTRY.items():
+        if meta.get("requires_approval", False):
+            sensitive.append(name)
+    return sorted(sensitive)
+
+
+def is_sensitive_tool(tool_name: str) -> bool:
+    return bool(TOOL_REGISTRY.get(tool_name, {}).get("requires_approval", False))
+
+
+def security_check(tool_name: str, args: dict, user_role: str, mode: str = "manual"):
+    """Security validation for tool call."""
 
     if tool_name not in TOOL_REGISTRY:
         raise PermissionError(f"Unknown tool `{tool_name}`!")
 
     tool_meta = TOOL_REGISTRY[tool_name]
+
+    # Auto mode is diagnostics-only and must never execute sensitive tools.
+    if mode == "auto" and tool_meta.get("requires_approval", False):
+        raise PermissionError(
+            f"Tool `{tool_name}` is blocked in auto mode (diagnostics-only)."
+        )
+
     if user_role not in tool_meta["roles"]:
         raise PermissionError(
             f"User role `{user_role}` is not allowed to call `{tool_name}`!"
@@ -53,22 +76,29 @@ def security_check(tool_name: str, args: dict, user_role: str):
         val = args.get(key, "")
         if isinstance(rule, str) and rule in val:
             raise PermissionError(
-                f"🚫 参数 `{key}` 值 `{val}` 命中敏感关键字 `{rule}`"
+                f"Parameter `{key}` value `{val}` hit sensitive keyword rule `{rule}`"
             )
         if hasattr(rule, "match") and rule.match(val):
             raise PermissionError(
-                f"🚫 参数 `{key}` 值 `{val}` 匹配到了敏感模式规则"
+                f"Parameter `{key}` value `{val}` matched sensitive pattern rule"
             )
 
-    # 参数敏感关键词检测
     for v in args.values():
         if any(p in str(v) for p in SENSITIVE_PATTERNS):
-            raise PermissionError(f"🚫 参数 `{v}` 包含敏感关键字，禁止调用。")
+            raise PermissionError(
+                f"Parameter `{v}` contains sensitive keywords, tool call denied."
+            )
 
 
-def before_tool_execution(tool_name: str, args: dict, user_id: str, user_role: str):
-    """执行前调用：权限验证 + 审计记录（预执行）"""
-    security_check(tool_name, args, user_role)
+def before_tool_execution(
+    tool_name: str,
+    args: dict,
+    user_id: str,
+    user_role: str,
+    mode: str = "manual",
+):
+    """Pre-execution hook: authz + audit request."""
+    security_check(tool_name, args, user_role, mode=mode)
 
     append_audit({
         "timestamp": now_iso(),
@@ -76,25 +106,33 @@ def before_tool_execution(tool_name: str, args: dict, user_id: str, user_role: s
         "tool": tool_name,
         "args": args,
         "user_id": user_id,
-        "user_role": user_role
+        "user_role": user_role,
     })
 
 
 def after_tool_execution(tool_name: str, result: str, user_id: str, user_role: str):
-    """执行后审计结果"""
+    """Post-execution hook: audit result."""
     append_audit({
         "timestamp": now_iso(),
         "event": "tool_call_result",
         "tool": tool_name,
         "result": result[:500],
         "user_id": user_id,
-        "user_role": user_role
+        "user_role": user_role,
     })
 
-def register_tool(name: str, permission: str = "info", roles=None, param_rules=None, tags=None):
+
+def register_tool(
+    name: str,
+    permission: str = "info",
+    roles=None,
+    param_rules=None,
+    tags=None,
+    requires_approval: bool | None = None,
+):
     """
-    注册工具装饰器
-    :param tags: 给工具打标签，如 ['docker'], ['ssh'], ['network']
+    Tool registration decorator.
+    :param tags: labels such as ['docker'], ['ssh'], ['network']
     """
     if roles is None:
         roles = ["admin"]
@@ -102,6 +140,8 @@ def register_tool(name: str, permission: str = "info", roles=None, param_rules=N
         param_rules = []
     if tags is None:
         tags = []
+    if requires_approval is None:
+        requires_approval = permission == "danger"
 
     def decorator(func):
         TOOL_REGISTRY[name] = {
@@ -111,16 +151,20 @@ def register_tool(name: str, permission: str = "info", roles=None, param_rules=N
             "roles": roles,
             "tags": tags,
             "param_rules": param_rules,
+            "requires_approval": requires_approval,
             "description": func.__doc__,
         }
         return func
+
     return decorator
+
 
 def check_params(tool_name: str, args: dict):
     rules = TOOL_REGISTRY[tool_name].get("param_rules", [])
-    for key, r in rules:
+    for key, rule in rules:
         val = args.get(key, "")
-        if isinstance(r, str) and r in val:
-            raise PermissionError(f"Value '{val}' violates rule '{r}'")
-        if hasattr(r, "match") and r.match(val):
+        if isinstance(rule, str) and rule in val:
+            raise PermissionError(f"Value '{val}' violates rule '{rule}'")
+        if hasattr(rule, "match") and rule.match(val):
             raise PermissionError(f"Value '{val}' violates rule pattern.")
+
