@@ -1,21 +1,26 @@
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from app.agent.prompts.diagnoser_system_prompt import DIAGNOSER_SYSTEM_PROMPT
 from app.agent.state import AgentState
-from app.agent.tools import log_analysis_tools  # noqa: F401  # ensure tool registration side effect
-from app.agent.tools import prometheus_tools  # noqa: F401  # ensure tool registration side effect
 from app.agent.tools.tool_manager import get_agent_tools
 from app.core.logger import logger
 from app.utils.llm_utils import get_llm
 
 llm = get_llm()
-EVIDENCE_TOOLS = {"query_prometheus_metrics", "analyze_log_around_alert"}
+EVIDENCE_ACTIONS = {
+    "prometheus.query_prometheus_metrics",
+    "log.analyze_log_around_alert",
+}
+LEGACY_EVIDENCE_TOOLS = {
+    "query_prometheus_metrics": "prometheus.query_prometheus_metrics",
+    "analyze_log_around_alert": "log.analyze_log_around_alert",
+}
 
 
 def _safe_json_loads(raw: Any):
@@ -38,6 +43,21 @@ def _evidence_fingerprint(tool_name: str, payload: Any) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
+def _extract_evidence_from_dispatch(msg: ToolMessage) -> Optional[tuple[str, Any]]:
+    parsed = _safe_json_loads(msg.content)
+    if not isinstance(parsed, dict):
+        return None
+
+    action = parsed.get("action")
+    status = parsed.get("status")
+    if not isinstance(action, str) or action not in EVIDENCE_ACTIONS:
+        return None
+    if status != "executed":
+        return None
+
+    return action, parsed.get("result")
+
+
 def _collect_evidence(messages: List[Any], existing: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     evidence = list(existing)
     seen = {item.get("fingerprint") for item in evidence if isinstance(item, dict)}
@@ -45,14 +65,23 @@ def _collect_evidence(messages: List[Any], existing: List[Dict[str, Any]]) -> Li
     for msg in messages:
         if not isinstance(msg, ToolMessage):
             continue
-        if msg.name not in EVIDENCE_TOOLS:
+
+        evidence_item = None
+        if msg.name == "dispatch_tool":
+            evidence_item = _extract_evidence_from_dispatch(msg)
+        else:
+            legacy_action = LEGACY_EVIDENCE_TOOLS.get(msg.name)
+            if legacy_action:
+                parsed = _safe_json_loads(msg.content)
+                if parsed is None:
+                    parsed = {"raw": str(msg.content)}
+                evidence_item = (legacy_action, parsed)
+
+        if not evidence_item:
             continue
 
-        parsed = _safe_json_loads(msg.content)
-        if parsed is None:
-            parsed = {"raw": str(msg.content)}
-
-        fp = _evidence_fingerprint(msg.name, parsed)
+        source_action, parsed_payload = evidence_item
+        fp = _evidence_fingerprint(source_action, parsed_payload)
         if fp in seen:
             continue
 
@@ -60,9 +89,9 @@ def _collect_evidence(messages: List[Any], existing: List[Dict[str, Any]]) -> Li
             {
                 "fingerprint": fp,
                 "source": "tool",
-                "tool": msg.name,
+                "tool": source_action,
                 "captured_at": datetime.now(timezone.utc).isoformat(),
-                "data": parsed,
+                "data": parsed_payload,
             }
         )
         seen.add(fp)
@@ -129,7 +158,6 @@ def diagnoser_node(state: AgentState):
     chain = prompt | llm_with_tools
     response = chain.invoke({"history": messages, "alert_info": alert_context_str})
 
-    # If diagnoser gives a non-tool response, capture it as latest hypothesis candidate.
     hypotheses = _collect_hypotheses([response], hypotheses)
 
     return {

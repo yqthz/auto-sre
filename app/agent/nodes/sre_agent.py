@@ -14,7 +14,7 @@ def sre_node(state):
 
     conversation = [system_msg] + messages
 
-    tools = get_agent_tools(user_role, mode="manual")
+    tools = get_agent_tools(user_role, mode=state.get("mode", "manual"))
 
     llm_with_tools = llm.bind_tools(tools)
 

@@ -64,6 +64,9 @@ class Document(Base):
     # 文件类型（pdf, txt, md, docx 等）
     file_type = Column(String(50), nullable=True)
 
+    # 文档全文（标准化文本），供 Agent 全文读取与上下文回捞
+    content_text = Column(Text, nullable=True)
+
     # 处理状态：pending（待处理）、processing（处理中）、completed（完成）、failed（失败）
     status = Column(String(50), default="pending", nullable=False, index=True)
 

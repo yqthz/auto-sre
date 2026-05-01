@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 from app.model.chat import ChatSession, ChatMessage
 from app.agent.graph import create_graph
-from app.agent.tools.security import TOOL_REGISTRY, is_sensitive_tool
+from app.agent.approval_policy import tool_approval_profile
 from app.core.logger import logger
 
 
@@ -90,9 +90,9 @@ class ChatService:
         tool_name = tool_call.get("name", "unknown")
         args = tool_call.get("args", {})
 
-        # 获取工具元数据
-        tool_meta = TOOL_REGISTRY.get(tool_name, {})
-        permission = tool_meta.get("permission", "unknown")
+        # 统一审批策略来源（含 dispatch action 映射）
+        approval_profile = tool_approval_profile(tool_name, args)
+        permission = str(approval_profile.get("permission") or "unknown")
 
         # 构建展示文本
         display = f"### 🔧 工具调用: {tool_name}\n\n"
@@ -102,7 +102,7 @@ class ChatService:
         display += "\n```\n\n"
 
         # 如果是敏感工具，显示警告
-        if is_sensitive_tool(tool_name):
+        if bool(tool_approval_profile(tool_name, args).get("requires_approval", False)):
             display += "⚠️ **这是一个危险操作，需要您的授权！**\n\n"
 
         return display
@@ -112,19 +112,9 @@ class ChatService:
         # 根据工具类型提取实际执行的命令
         command = None
 
-        if tool_name == "exec_command_in_container":
-            command = args.get("command", "")
-        elif tool_name == "restart_server":
+        if tool_name == "restart_server":
             container = args.get("container_name", "")
             command = f"docker restart {container}"
-        elif tool_name == "fetch_remote_log":
-            file_path = args.get("file_path", "")
-            lines = args.get("lines", 50)
-            command = f"tail -n {lines} {file_path}"
-        elif tool_name == "grep_remote_log":
-            file_path = args.get("file_path", "")
-            pattern = args.get("pattern", "")
-            command = f"grep '{pattern}' {file_path}"
 
         if command:
             return f"```bash\n{command}\n```"
@@ -137,9 +127,16 @@ class ChatService:
     def _build_approval_request(self, tool_call: dict) -> dict:
         tool_name = tool_call.get("name", "unknown")
         args = tool_call.get("args", {})
-        tool_meta = TOOL_REGISTRY.get(tool_name, {})
-        permission = tool_meta.get("permission", "unknown")
-        risk_level = "high" if permission == "danger" else ("medium" if permission == "limited" else "low")
+
+        approval_profile = tool_approval_profile(tool_name, args)
+        permission = str(approval_profile.get("permission") or "unknown")
+        risk_level = str(approval_profile.get("risk_level") or "low")
+        impact = f"execute tool `{tool_name}` with provided args in manual mode"
+
+        if tool_name == "dispatch_tool":
+            action = str(approval_profile.get("action") or args.get("action") or "")
+            if action:
+                impact = f"execute action `{action}` through dispatch_tool"
 
         return {
             "approval_id": tool_call.get("id"),
@@ -148,7 +145,7 @@ class ChatService:
             "args": args,
             "permission": permission,
             "risk_level": risk_level,
-            "impact": f"execute tool `{tool_name}` with provided args in manual mode",
+            "impact": impact,
             "rollback": "not_provided",
             "shell_command": self.format_shell_command_display(tool_name, args),
             "status": "pending",
@@ -166,7 +163,7 @@ class ChatService:
         last_message = (snapshot_values.get("messages") or [None])[-1]
         if isinstance(last_message, AIMessage) and last_message.tool_calls:
             for tc in last_message.tool_calls:
-                if is_sensitive_tool(tc.get("name", "")):
+                if bool(tool_approval_profile(tc.get("name", ""), tc.get("args", {})).get("requires_approval", False)):
                     return tc
         return None
 
@@ -179,7 +176,7 @@ class ChatService:
         actor_role: str,
         reason: Optional[str] = None,
     ) -> Optional[dict]:
-        config = {"configurable": {"thread_id": session.thread_id}}
+        config = {"configurable": {"thread_id": session.thread_id, "mode": session.mode}}
         snapshot = self.graph.get_state(config)
         snapshot_values = snapshot.values or {}
         pending_tool_call = self._find_pending_sensitive_tool_call(snapshot_values)
@@ -252,7 +249,8 @@ class ChatService:
                 "configurable": {
                     "thread_id": session.thread_id,
                     "user_id": str(user_id),
-                    "user_role": user_role
+                    "user_role": user_role,
+                    "mode": session.mode
                 }
             }
             snapshot = self.graph.get_state(config)
@@ -262,7 +260,7 @@ class ChatService:
             pending_tool_call = None
             if isinstance(last_message, AIMessage) and last_message.tool_calls:
                 for tc in last_message.tool_calls:
-                    if is_sensitive_tool(tc.get("name", "")):
+                    if bool(tool_approval_profile(tc.get("name", ""), tc.get("args", {})).get("requires_approval", False)):
                         pending_tool_call = tc
                         break
 
@@ -441,7 +439,8 @@ class ChatService:
                             if last_message.tool_calls:
                                 for tool_call in last_message.tool_calls:
                                     tool_name = tool_call["name"]
-                                    is_sensitive = is_sensitive_tool(tool_name)
+                                    args = tool_call["args"]
+                                    is_sensitive = bool(tool_approval_profile(tool_name, args).get("requires_approval", False))
 
                                     if is_sensitive:
                                         # 又遇到敏感工具，再次暂停
@@ -559,7 +558,8 @@ class ChatService:
                 "configurable": {
                     "thread_id": session.thread_id,
                     "user_id": str(user_id),
-                    "user_role": user_role
+                    "user_role": user_role,
+                    "mode": session.mode
                 }
             }
 
@@ -605,7 +605,7 @@ class ChatService:
                                 args = tool_call["args"]
 
                                 # 检查是否是敏感工具
-                                is_sensitive = is_sensitive_tool(tool_name)
+                                is_sensitive = bool(tool_approval_profile(tool_name, args).get("requires_approval", False))
 
                                 # 格式化工具调用展示
                                 tool_display = self.format_tool_call_display(tool_call)

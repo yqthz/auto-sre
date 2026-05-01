@@ -106,6 +106,52 @@ APPROVAL_POLICY = _load_approval_policy()
 TOOL_APPROVAL_POLICY = _load_tool_approval_policy()
 
 
+def tool_approval_profile(tool_name: str, args: dict | None = None) -> Dict[str, str | bool]:
+    """
+    Unified source of truth for tool approval requirement and risk level.
+    Returns:
+    - requires_approval: bool
+    - risk_level: low/medium/high
+    - permission: info/limited/moderate/danger/unknown
+    - action: dispatcher action when tool_name is dispatch_tool
+    """
+    action = ""
+    permission = "unknown"
+    risk_level = "low"
+    requires_approval = False
+
+    if tool_name == "dispatch_tool":
+        action = str((args or {}).get("action") or "")
+        if action:
+            from app.agent.dispatcher.registry import get_action_meta
+
+            action_meta = get_action_meta(action)
+            if action_meta:
+                return {
+                    "requires_approval": bool(action_meta.requires_approval),
+                    "risk_level": action_meta.risk_level,
+                    "permission": action_meta.permission,
+                    "action": action,
+                }
+
+    from app.agent.tools.security import TOOL_REGISTRY
+
+    meta = TOOL_REGISTRY.get(tool_name, {})
+    permission = str(meta.get("permission") or "unknown")
+    requires_approval = bool(meta.get("requires_approval", permission == "danger"))
+    if permission == "danger":
+        risk_level = "high"
+    elif permission in {"limited", "moderate"}:
+        risk_level = "medium"
+
+    return {
+        "requires_approval": requires_approval,
+        "risk_level": risk_level,
+        "permission": permission,
+        "action": action,
+    }
+
+
 def allowed_roles_for_risk(risk_level: str) -> List[str]:
     return APPROVAL_POLICY.get(risk_level.lower(), ["admin"])
 

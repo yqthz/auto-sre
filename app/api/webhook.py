@@ -10,7 +10,8 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.graph import create_graph
-from app.agent.tools.security import after_tool_execution, before_tool_execution, is_sensitive_tool
+from app.agent.approval_policy import tool_approval_profile
+from app.agent.tools.security import after_tool_execution, before_tool_execution
 from app.api import deps
 from app.core.logger import logger
 from app.db.session import AsyncSessionLocal
@@ -77,7 +78,7 @@ async def _mark_analysis_status(alert_event_id: int, status: str):
 
 async def save_analysis_results(thread_id: str, alert_event_id: int, analysis_status: str):
     async with AsyncSessionLocal() as db:
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {"configurable": {"thread_id": thread_id, "mode": "auto", "user_role": AUTO_BOT_ROLE, "user_id": AUTO_BOT_USER_ID}}
         snapshot = graph.get_state(config)
         messages = snapshot.values.get("messages", [])
         report_text = snapshot.values.get("report", "")
@@ -86,11 +87,30 @@ async def save_analysis_results(thread_id: str, alert_event_id: int, analysis_st
         log_summary = None
 
         for msg in messages:
-            if isinstance(msg, ToolMessage):
-                if msg.name == "query_prometheus_metrics":
-                    metrics_snapshot = _safe_json_loads(msg.content)
-                elif msg.name == "analyze_log_around_alert":
-                    log_summary = _safe_json_loads(msg.content)
+            if not isinstance(msg, ToolMessage):
+                continue
+
+            if msg.name == "query_prometheus_metrics":
+                metrics_snapshot = _safe_json_loads(msg.content)
+                continue
+
+            if msg.name == "analyze_log_around_alert":
+                log_summary = _safe_json_loads(msg.content)
+                continue
+
+            if msg.name != "dispatch_tool":
+                continue
+
+            payload = _safe_json_loads(msg.content)
+            if not isinstance(payload, dict) or payload.get("status") != "executed":
+                continue
+
+            action = payload.get("action")
+            result = payload.get("result")
+            if action == "prometheus.query_prometheus_metrics":
+                metrics_snapshot = result
+            elif action == "log.analyze_log_around_alert":
+                log_summary = result
 
         analysis_report = _safe_json_loads(report_text)
 
@@ -114,11 +134,11 @@ def run_agent(
     initial_input: Optional[Dict] = None,
 ):
     """
-    鍚庡彴浠诲姟锛氶┍锟?Agent 鑷姩杩愯锟?    """
-    config = {"configurable": {"thread_id": thread_id}}
+    后台任务：驱动 Agent 自动运行。
+    """
+    config = {"configurable": {"thread_id": thread_id, "mode": "auto", "user_role": AUTO_BOT_ROLE, "user_id": AUTO_BOT_USER_ID}}
     current_input = initial_input
     success = True
-
     logger.info(f"Thread {thread_id}: Starting loop")
     asyncio.run_coroutine_threadsafe(
         _mark_analysis_status(alert_event_id, "running"), app_loop
@@ -177,7 +197,10 @@ def run_agent(
                         continue
 
                     tool_names = [t["name"] for t in tool_calls]
-                    has_sensitive_tool = any(is_sensitive_tool(name) for name in tool_names)
+                    has_sensitive_tool = any(
+                        bool(tool_approval_profile(t.get("name", ""), t.get("args", {})).get("requires_approval", False))
+                        for t in tool_calls
+                    )
 
                     if has_sensitive_tool:
                         logger.warning(f"Thread {thread_id}: Paused for sensitive tools: {tool_names}")
@@ -212,10 +235,10 @@ async def receive_alert(
     db: AsyncSession = Depends(deps.get_db),
 ):
     """
-    鎺ユ敹 Alertmanager 鍛婅锛岀珛鍗宠繑鍥烇紝鍚庡彴澶勭悊锟?    """
+    接收 Alertmanager 告警，立即返回，后台处理。
+    """
     alerts = request.alerts
     logger.info(f"Received {len(alerts)} alerts")
-
     app_loop = asyncio.get_running_loop()
 
     for alert in alerts:
@@ -242,7 +265,7 @@ async def receive_alert(
                 "hypotheses": [],
                 "approval_requests": [],
                 "actions_executed": [],
-                "messages": [HumanMessage(content=f"閺€璺哄煂閺傛澘鎲＄拃锔肩礉鐠囧嘲绱戞慨瀣殰閸斻劍甯撻弻? {alert.labels}")],
+                "messages": [HumanMessage(content=f"检测到重复告警，继续执行自动排查：{alert.labels}")],
                 }
                 logger.info(
                     "Alert fingerprint exists, but duplicate-skip is temporarily disabled: "
@@ -303,7 +326,7 @@ async def receive_alert(
                     "hypotheses": [],
                     "approval_requests": [],
                     "actions_executed": [],
-                    "messages": [HumanMessage(content=f"鏀跺埌鏂板憡璀︼紝璇峰紑濮嬭嚜鍔ㄦ帓锟? {alert.labels}")],
+                    "messages": [HumanMessage(content=f"收到新告警，请开始自动排查：{alert.labels}")],
             }
 
             event = AlertEvent(

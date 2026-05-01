@@ -18,7 +18,7 @@ class AuditLog(Base):
     # 事件类型：login, logout, tool_call_request, tool_call_result, tool_call_denied
     event_type = Column(String, nullable=False, index=True)
 
-    # 工具相关（如果是工具调用）
+    # 工具调用
     tool_name = Column(String, nullable=True, index=True)
     tool_permission = Column(String, nullable=True)  # info, moderate, danger
 
@@ -28,9 +28,9 @@ class AuditLog(Base):
     # 执行结果：success, failed, denied
     status = Column(String, nullable=True, index=True)
 
-    # IP 地址和 User-Agent（用于安全分析）
+    # IP 地址和 User-Agent
     ip_address = Column(String, nullable=True)
     user_agent = Column(String, nullable=True)
 
-    # 错误信息（如果有）
+    # 错误信息
     error_message = Column(Text, nullable=True)

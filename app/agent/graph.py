@@ -8,9 +8,14 @@ from app.agent.nodes.notification_node import notification_node
 from app.agent.nodes.reporter_node import reporter_node
 from app.agent.nodes.sre_agent import sre_node
 from app.agent.state import AgentState
+from app.agent.tools.loader import ensure_tool_modules_loaded
 from app.agent.tools.security import TOOL_REGISTRY
 
-ALL_TOOLS_LIST = [meta["fn"] for meta in TOOL_REGISTRY.values()]
+
+def _all_tools_list():
+    ensure_tool_modules_loaded()
+    return [meta["fn"] for meta in TOOL_REGISTRY.values()]
+
 
 def entry_router(state: AgentState):
     """决定入口：是自动诊断还是人工对话"""
@@ -28,6 +33,7 @@ def diagnoser_router(state: AgentState):
         return "tools"
     return "reporter"
 
+
 def post_tool_router(state: AgentState):
     """工具执行完后，回哪里去？"""
     # 根据 mode 原路返回
@@ -35,11 +41,13 @@ def post_tool_router(state: AgentState):
         return "diagnoser"
     return "sre_agent"
 
+
 def should_continue(state: AgentState):
     last_message = state['messages'][-1]
     if last_message.tool_calls:
         return "tools"
     return END
+
 
 def create_graph():
     builder = StateGraph(AgentState)
@@ -48,8 +56,7 @@ def create_graph():
     builder.add_node("sre_agent", sre_node)
     builder.add_node("reporter", reporter_node)
     builder.add_node("notification", notification_node)
-    builder.add_node("tools", ToolNode(ALL_TOOLS_LIST))
-
+    builder.add_node("tools", ToolNode(_all_tools_list()))
 
     builder.set_conditional_entry_point(
         entry_router,
@@ -85,8 +92,6 @@ def create_graph():
             "sre_agent": "sre_agent"
         }
     )
-
-    # builder.add_edge("reporter", END)
 
     builder.add_edge("reporter", "notification")
     builder.add_edge("notification", END)

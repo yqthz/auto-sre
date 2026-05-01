@@ -116,6 +116,9 @@ class DocumentService:
 
             logger.info(f"Generated {len(chunks)} chunks")
 
+            # 2.1 保存全文文本（主读取路径）
+            document.content_text = content
+
             # 3. 向量化
             logger.info(f"Generating embeddings for {len(chunks)} chunks")
             try:

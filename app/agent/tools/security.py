@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from app.storage import append_audit
 from app.utils.format_utils import now_iso
@@ -48,8 +48,11 @@ def get_sensitive_tool_names() -> List[str]:
     return sorted(sensitive)
 
 
-def is_sensitive_tool(tool_name: str) -> bool:
-    return bool(TOOL_REGISTRY.get(tool_name, {}).get("requires_approval", False))
+def is_sensitive_tool(tool_name: str, args: Optional[dict] = None) -> bool:
+    from app.agent.approval_policy import tool_approval_profile
+
+    profile = tool_approval_profile(tool_name, args or {})
+    return bool(profile.get("requires_approval", False))
 
 
 def security_check(tool_name: str, args: dict, user_role: str, mode: str = "manual"):
@@ -167,4 +170,3 @@ def check_params(tool_name: str, args: dict):
             raise PermissionError(f"Value '{val}' violates rule '{rule}'")
         if hasattr(rule, "match") and rule.match(val):
             raise PermissionError(f"Value '{val}' violates rule pattern.")
-

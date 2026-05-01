@@ -10,8 +10,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.agent.approval_policy import APPROVAL_TTL_SECONDS, check_approval_permission
-from app.agent.tools.security import TOOL_REGISTRY
+from app.agent.approval_policy import APPROVAL_TTL_SECONDS, check_approval_permission, tool_approval_profile
 from app.api import deps
 from app.core.logger import logger
 from app.model.audit_log import AuditLog
@@ -38,18 +37,14 @@ def _extract_approval_request(message: ChatMessage) -> dict:
                 return request
 
             tool_name = first_call.get("name") or message.tool_name or "unknown"
-            tool_meta = TOOL_REGISTRY.get(tool_name, {})
-            permission = tool_meta.get("permission", "unknown")
-            risk_level = (
-                "high" if permission == "danger"
-                else ("medium" if permission == "limited" else "low")
-            )
+            tool_args = first_call.get("args", {})
+            profile = tool_approval_profile(tool_name, tool_args)
             return {
                 "tool_call_id": first_call.get("id"),
                 "tool_name": tool_name,
-                "permission": permission,
-                "risk_level": risk_level,
-                "args": first_call.get("args", {}),
+                "permission": str(profile.get("permission") or "unknown"),
+                "risk_level": str(profile.get("risk_level") or "low"),
+                "args": tool_args,
             }
     return {}
 
