@@ -19,7 +19,6 @@ def _json_result(tool: str, ok: bool, **extra):
     name="check_network_connectivity",
     permission="info",
     roles=["admin", "sre", "viewer"],
-    param_rules=[("target_host", "internal")],
 )
 def check_network_connectivity(target_host: str, port: int, timeout: float = 2.0):
     """从宿主机测试 target_host:port 的 TCP 连通性。"""
@@ -55,7 +54,6 @@ def check_network_connectivity(target_host: str, port: int, timeout: float = 2.0
     name="check_db_tcp_connectivity",
     permission="info",
     roles=["admin", "sre", "viewer"],
-    param_rules=[("db_host", "internal")],
 )
 def check_db_tcp_connectivity(db_host: str, db_port: int, timeout: float = 2.0):
     """从宿主机测试 DB 端口连通性（仅 TCP 探测，不做认证）。"""

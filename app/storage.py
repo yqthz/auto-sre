@@ -1,26 +1,67 @@
-import json, os
-from typing import Dict
+import asyncio
+from datetime import datetime, timezone
+from typing import Dict, Optional
 
-from app.utils.format_utils import gen_id, now_iso
+from app.core.logger import logger
+from app.db.session import AsyncSessionLocal
+from app.model.audit_log import AuditLog
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-os.makedirs(DATA_DIR, exist_ok=True)
 
-def save_alert(alert):
-    aid = gen_id("alert")
-    path = os.path.join(DATA_DIR, f"{aid}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"id": aid, "ts": now_iso(), "alert": alert}, f, ensure_ascii=False)
-    return aid
+def _parse_timestamp(value: object) -> Optional[datetime]:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
-def save_report(report):
-    rid = gen_id("report")
-    path = os.path.join(DATA_DIR, f"{rid}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"id": rid, "ts": now_iso(), "report": report}, f, ensure_ascii=False)
-    return rid
+
+def _status_from_event(event_type: str) -> Optional[str]:
+    if event_type == "tool_call_request":
+        return "requested"
+    if event_type == "tool_call_result":
+        return "success"
+    if event_type == "tool_call_denied":
+        return "denied"
+    return None
+
+
+async def _append_audit_async(entry: Dict):
+    event_type = str(entry.get("event") or "unknown")
+    audit = AuditLog(
+        timestamp=_parse_timestamp(entry.get("timestamp")) or datetime.utcnow(),
+        user_id=str(entry.get("user_id") or "unknown"),
+        user_role=str(entry.get("user_role") or "unknown"),
+        event_type=event_type,
+        tool_name=str(entry.get("tool")) if entry.get("tool") else None,
+        details=entry,
+        status=_status_from_event(event_type),
+    )
+
+    async with AsyncSessionLocal() as db:
+        db.add(audit)
+        await db.commit()
+
 
 def append_audit(entry: Dict):
-    with open(os.path.join(DATA_DIR, "audit.jsonl"), "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    """Persist one audit record into database."""
+
+    async def _run():
+        try:
+            await _append_audit_async(entry)
+        except Exception as exc:
+            logger.error("append_audit db write failed: %s", exc, exc_info=True)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(_run())
+        return
+
+    loop.create_task(_run())

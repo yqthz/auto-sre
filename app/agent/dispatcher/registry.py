@@ -23,7 +23,6 @@ ACTION_SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "log.analyze_log_around_alert": {
         "properties": {
-            "log_file": {"type": "string", "minLength": 1},
             "alert_time": {
                 "type": "string",
                 "minLength": 1,
