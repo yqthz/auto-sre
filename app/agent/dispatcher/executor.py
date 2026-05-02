@@ -1,8 +1,11 @@
 import os
+import time
 from typing import Any, Dict
 
 from app.agent.dispatcher.cli_runner import run_via_cli
 from app.agent.dispatcher.policy import evaluate_action
+
+MAX_BACKOFF_SECONDS = 5.0
 
 
 def _legacy_fallback_enabled_for_action(action: str) -> bool:
@@ -22,6 +25,12 @@ def _legacy_fallback_enabled_for_action(action: str) -> bool:
         return True
 
     return action in allowlist
+
+
+def _should_retry(error_kind: str, attempt: int, max_retries: int, retry_on_kinds: list[str]) -> bool:
+    if attempt > max_retries:
+        return False
+    return error_kind in set(retry_on_kinds)
 
 
 def dispatch_action(action: str, params: Dict[str, Any], user_role: str, mode: str) -> Dict[str, Any]:
@@ -52,22 +61,60 @@ def dispatch_action(action: str, params: Dict[str, Any], user_role: str, mode: s
             "execution_backend": "none",
         }
 
-    cli_result = run_via_cli(action=action, params=params)
-    if cli_result.get("ok"):
-        return {
-            "status": "executed",
-            "action": action,
-            "risk_level": meta.risk_level,
-            "requires_approval": meta.requires_approval,
-            "reason": "",
-            "result": cli_result.get("result"),
-            "error": "",
-            "execution_backend": "cli",
-        }
+    attempt = 0
+    retry_history = []
+    last_cli_result = None
+
+    while True:
+        cli_result = run_via_cli(action=action, params=params, timeout_seconds=meta.timeout_seconds)
+        last_cli_result = cli_result
+
+        if cli_result.get("ok"):
+            return {
+                "status": "executed",
+                "action": action,
+                "risk_level": meta.risk_level,
+                "requires_approval": meta.requires_approval,
+                "reason": "",
+                "result": cli_result.get("result"),
+                "error": "",
+                "execution_backend": "cli",
+                "attempts": attempt + 1,
+                "last_error_kind": "",
+                "retry_history": retry_history,
+            }
+
+        attempt += 1
+        err_kind = str(cli_result.get("kind") or "unknown")
+        err_text = str(cli_result.get("error") or "")
+        retry_history.append(
+            {
+                "attempt": attempt,
+                "error_kind": err_kind,
+                "error": err_text[:260],
+                "timeout_seconds": meta.timeout_seconds,
+            }
+        )
+
+        if _should_retry(
+            error_kind=err_kind,
+            attempt=attempt,
+            max_retries=meta.max_retries,
+            retry_on_kinds=meta.retry_on_kinds,
+        ):
+            backoff_seconds = min(
+                MAX_BACKOFF_SECONDS,
+                meta.retry_backoff_seconds * (meta.retry_backoff_multiplier ** (attempt - 1)),
+            )
+            if backoff_seconds > 0:
+                time.sleep(backoff_seconds)
+            continue
+
+        break
 
     fallback_reason = "cli_fallback:{kind}: {error}".format(
-        kind=str(cli_result.get("kind") or "unknown"),
-        error=str(cli_result.get("error") or "")[:260],
+        kind=str((last_cli_result or {}).get("kind") or "unknown"),
+        error=str((last_cli_result or {}).get("error") or "")[:260],
     )
 
     if not _legacy_fallback_enabled_for_action(action):
@@ -80,6 +127,9 @@ def dispatch_action(action: str, params: Dict[str, Any], user_role: str, mode: s
             "result": {},
             "error": fallback_reason,
             "execution_backend": "cli_failed",
+            "attempts": attempt,
+            "last_error_kind": str((last_cli_result or {}).get("kind") or "unknown"),
+            "retry_history": retry_history,
         }
 
     try:
@@ -93,6 +143,9 @@ def dispatch_action(action: str, params: Dict[str, Any], user_role: str, mode: s
             "result": result,
             "error": "",
             "execution_backend": "legacy_fallback",
+            "attempts": attempt,
+            "last_error_kind": str((last_cli_result or {}).get("kind") or "unknown"),
+            "retry_history": retry_history,
         }
     except Exception as e:
         return {
@@ -104,4 +157,7 @@ def dispatch_action(action: str, params: Dict[str, Any], user_role: str, mode: s
             "result": {},
             "error": str(e),
             "execution_backend": "failed",
+            "attempts": attempt,
+            "last_error_kind": str((last_cli_result or {}).get("kind") or "unknown"),
+            "retry_history": retry_history,
         }

@@ -48,6 +48,15 @@ ACTION_SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
 }
 
+DEFAULT_ACTION_TIMEOUT_SECONDS = 10
+DEFAULT_ACTION_MAX_RETRIES = 1
+DEFAULT_ACTION_RETRY_BACKOFF_SECONDS = 0.5
+DEFAULT_ACTION_RETRY_BACKOFF_MULTIPLIER = 2.0
+DEFAULT_ACTION_RETRY_ON_KINDS = ["timeout", "spawn_error", "cli_failed"]
+MAX_ACTION_TIMEOUT_SECONDS = 120
+
+ACTION_RUNTIME_OVERRIDES: Dict[str, Dict[str, Any]] = {}
+
 
 @dataclass(frozen=True)
 class ActionMeta:
@@ -63,6 +72,11 @@ class ActionMeta:
     required_params: List[str]
     param_types: Dict[str, str]
     param_schema: Dict[str, Any]
+    timeout_seconds: int
+    max_retries: int
+    retry_backoff_seconds: float
+    retry_backoff_multiplier: float
+    retry_on_kinds: List[str]
 
 
 def _permission_to_risk(permission: str) -> str:
@@ -208,6 +222,41 @@ def _normalize_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _normalize_runtime_config(raw: Dict[str, Any], *, requires_approval: bool, risk_level: str) -> Dict[str, Any]:
+    timeout_seconds = int(raw.get("timeout_seconds", DEFAULT_ACTION_TIMEOUT_SECONDS))
+    if timeout_seconds <= 0:
+        timeout_seconds = DEFAULT_ACTION_TIMEOUT_SECONDS
+    timeout_seconds = min(timeout_seconds, MAX_ACTION_TIMEOUT_SECONDS)
+
+    default_retries = 0 if (requires_approval or risk_level == "high") else DEFAULT_ACTION_MAX_RETRIES
+    max_retries = int(raw.get("max_retries", default_retries))
+    if max_retries < 0:
+        max_retries = 0
+
+    retry_backoff_seconds = float(raw.get("retry_backoff_seconds", DEFAULT_ACTION_RETRY_BACKOFF_SECONDS))
+    if retry_backoff_seconds < 0:
+        retry_backoff_seconds = 0.0
+
+    retry_backoff_multiplier = float(raw.get("retry_backoff_multiplier", DEFAULT_ACTION_RETRY_BACKOFF_MULTIPLIER))
+    if retry_backoff_multiplier < 1:
+        retry_backoff_multiplier = 1.0
+
+    retry_on_kinds_raw = raw.get("retry_on_kinds", DEFAULT_ACTION_RETRY_ON_KINDS)
+    if not isinstance(retry_on_kinds_raw, list):
+        retry_on_kinds_raw = DEFAULT_ACTION_RETRY_ON_KINDS
+    retry_on_kinds = [str(item) for item in retry_on_kinds_raw if str(item).strip()]
+    if not retry_on_kinds:
+        retry_on_kinds = list(DEFAULT_ACTION_RETRY_ON_KINDS)
+
+    return {
+        "timeout_seconds": timeout_seconds,
+        "max_retries": max_retries,
+        "retry_backoff_seconds": retry_backoff_seconds,
+        "retry_backoff_multiplier": retry_backoff_multiplier,
+        "retry_on_kinds": retry_on_kinds,
+    }
+
+
 def list_actions() -> List[ActionMeta]:
     ensure_tool_modules_loaded()
     actions: List[ActionMeta] = []
@@ -223,6 +272,13 @@ def list_actions() -> List[ActionMeta]:
         required_params, param_types, base_schema = _infer_param_schema(fn)
         override = ACTION_SCHEMA_OVERRIDES.get(action) or {}
         param_schema = _normalize_schema(_deep_merge_schema(base_schema, override))
+        risk_level = _permission_to_risk(str(meta.get("permission") or "info"))
+        requires_approval = bool(meta.get("requires_approval", False))
+        runtime_config = _normalize_runtime_config(
+            ACTION_RUNTIME_OVERRIDES.get(action) or {},
+            requires_approval=requires_approval,
+            risk_level=risk_level,
+        )
 
         actions.append(
             ActionMeta(
@@ -233,11 +289,16 @@ def list_actions() -> List[ActionMeta]:
                 description=(meta.get("description") or "").strip(),
                 roles=list(meta.get("roles") or []),
                 permission=str(meta.get("permission") or "info"),
-                requires_approval=bool(meta.get("requires_approval", False)),
-                risk_level=_permission_to_risk(str(meta.get("permission") or "info")),
+                requires_approval=requires_approval,
+                risk_level=risk_level,
                 required_params=required_params,
                 param_types=param_types,
                 param_schema=param_schema,
+                timeout_seconds=runtime_config["timeout_seconds"],
+                max_retries=runtime_config["max_retries"],
+                retry_backoff_seconds=runtime_config["retry_backoff_seconds"],
+                retry_backoff_multiplier=runtime_config["retry_backoff_multiplier"],
+                retry_on_kinds=runtime_config["retry_on_kinds"],
             )
         )
 

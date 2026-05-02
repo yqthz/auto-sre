@@ -28,6 +28,11 @@ def _fake_meta() -> ActionMeta:
             "required": ["value"],
             "additionalProperties": False,
         },
+        timeout_seconds=10,
+        max_retries=1,
+        retry_backoff_seconds=0.5,
+        retry_backoff_multiplier=2.0,
+        retry_on_kinds=["timeout", "spawn_error", "cli_failed"],
     )
 
 

@@ -22,12 +22,17 @@ def _fake_meta() -> ActionMeta:
             "type": "object",
             "properties": {
                 "log_file": {"type": "string", "minLength": 1},
-                "alert_time": {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}T"},
+                "alert_time": {"type": "string", "pattern": r"^\\d{4}-\\d{2}-\\d{2}T"},
                 "window_minutes": {"type": "integer", "minimum": 1, "maximum": 60},
             },
             "required": ["log_file", "alert_time"],
             "additionalProperties": False,
         },
+        timeout_seconds=10,
+        max_retries=1,
+        retry_backoff_seconds=0.5,
+        retry_backoff_multiplier=2.0,
+        retry_on_kinds=["timeout", "spawn_error", "cli_failed"],
     )
 
 
