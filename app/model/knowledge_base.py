@@ -3,7 +3,7 @@ RAG 知识库数据库模型
 使用 SQLAlchemy ORM + pgvector
 """
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from pgvector.sqlalchemy import Vector
 
@@ -24,9 +24,6 @@ class KnowledgeBase(Base):
 
     # 所属用户
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-
-    # 是否公开（未来扩展：团队共享）
-    is_public = Column(Boolean, default=False, nullable=False)
 
     # 时间戳
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -61,7 +58,7 @@ class Document(Base):
     # 文件大小（字节）
     file_size = Column(Integer, nullable=True)
 
-    # 文件类型（pdf, txt, md, docx 等）
+    # 文件类型（pdf, txt, md）
     file_type = Column(String(50), nullable=True)
 
     # 文档全文（标准化文本），供 Agent 全文读取与上下文回捞

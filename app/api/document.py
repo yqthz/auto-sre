@@ -36,7 +36,7 @@ async def upload_document(
     """
     上传文档到知识库
 
-    - 支持的文件类型: PDF, TXT, MD, DOCX
+    - 支持的文件类型: PDF, TXT, MD
     - 文件会先上传到 MinIO
     - 然后在后台处理（分块、向量化）
     - 使用文件哈希去重
@@ -57,7 +57,7 @@ async def upload_document(
     if file_type == 'unknown':
         raise HTTPException(
             status_code=400,
-            detail="Unsupported file type. Supported: PDF, TXT, MD, DOCX"
+            detail="Unsupported file type. Supported: PDF, TXT, MD"
         )
 
     # 保存临时文件

@@ -5,10 +5,48 @@ import json
 import re
 from typing import Optional
 
+from langchain_core.runnables import RunnableConfig
+
 from app.core.logger import logger
 from app.agent.tools.security import register_tool
 from app.rag.pg_manager import pg_manager
+from app.storage import append_audit
+from app.utils.format_utils import now_iso
 from app.utils.llm_utils import get_embeddings
+
+
+def _context_from_config(config: Optional[RunnableConfig]) -> tuple[str, str, str]:
+    cfg = dict(config or {})
+    configurable = dict(cfg.get("configurable") or {})
+    user_id = str(configurable.get("user_id") or "unknown")
+    user_role = str(configurable.get("user_role") or "unknown")
+    thread_id = str(configurable.get("thread_id") or "global")
+    return user_id, user_role, thread_id
+
+
+def _append_rag_audit(
+    *,
+    tool_name: str,
+    config: Optional[RunnableConfig],
+    status: str,
+    details: dict,
+):
+    user_id, user_role, thread_id = _context_from_config(config)
+    append_audit(
+        {
+            "timestamp": now_iso(),
+            "event": "rag_read",
+            "tool": tool_name,
+            "user_id": user_id,
+            "user_role": user_role,
+            "status": status,
+            "details": {
+                "thread_id": thread_id,
+                "read_policy": "shared_read_owner_write",
+                **details,
+            },
+        }
+    )
 
 
 @register_tool(
@@ -17,14 +55,16 @@ from app.utils.llm_utils import get_embeddings
     roles=["admin", "sre", "viewer"],
     tags=["rag"]
 )
-def search_knowledge_base(
+async def search_knowledge_base(
     query: str,
     kb_id: Optional[int] = None,
     top_k: int = 5,
+    config: Optional[RunnableConfig] = None,
 ) -> str:
     """
     【知识库搜索】使用混合检索（向量 + 关键词）召回并排序相关文档。
-    当前读取策略为“读共享”：不按 user_id 做读取隔离。
+    当前 RAG 权限策略为“读共享、写隔离”：读取不按 user_id 隔离，
+    写入、更新、删除等管理操作仍由 API 层按知识库 owner 校验。
 
     Args:
         query: 搜索关键词，如 "OOM killer"、"502 Bad Gateway"。
@@ -65,7 +105,7 @@ def search_knowledge_base(
         query_embedding = embeddings.embed_query(query)
 
         # 执行混合检索
-        results = pg_manager.hybrid_search_v2(
+        results = await pg_manager.hybrid_search_v2(
             query_embedding=query_embedding,
             query_text=query,
             kb_id=kb_id,
@@ -73,6 +113,18 @@ def search_knowledge_base(
         )
 
         if not results:
+            _append_rag_audit(
+                tool_name="search_knowledge_base",
+                config=config,
+                status="success",
+                details={
+                    "query": query,
+                    "kb_id": kb_id,
+                    "top_k": top_k,
+                    "result_document_ids": [],
+                    "result_count": 0,
+                },
+            )
             return json.dumps(
                 {
                     "ok": True,
@@ -109,6 +161,19 @@ def search_knowledge_base(
                 }
             )
 
+        _append_rag_audit(
+            tool_name="search_knowledge_base",
+            config=config,
+            status="success",
+            details={
+                "query": query,
+                "kb_id": kb_id,
+                "top_k": top_k,
+                "result_document_ids": [r.get("document_id") for r in results],
+                "result_count": len(results),
+            },
+        )
+
         logger.info(f"RAG tool: found {len(results)} results")
         return json.dumps(
             {
@@ -123,6 +188,17 @@ def search_knowledge_base(
 
     except Exception as e:
         logger.error(f"RAG tool search failed: {e}", exc_info=True)
+        _append_rag_audit(
+            tool_name="search_knowledge_base",
+            config=config,
+            status="failed",
+            details={
+                "query": query,
+                "kb_id": kb_id,
+                "top_k": top_k,
+                "error": str(e),
+            },
+        )
         return json.dumps(
             {
                 "ok": False,
@@ -141,9 +217,11 @@ def search_knowledge_base(
     roles=["admin", "sre", "viewer"],
     tags=["rag"],
 )
-def list_knowledge_bases() -> str:
+async def list_knowledge_bases(config: Optional[RunnableConfig] = None) -> str:
     """
     列出当前可检索的知识库，供 agent 获取 kb_id 后再调用 search_knowledge_base。
+    当前 RAG 权限策略为“读共享、写隔离”：这里列出组织内 completed 文档所在知识库，
+    不按 user_id 做读取隔离。
 
     Returns:
         JSON 字符串，格式为:
@@ -161,10 +239,25 @@ def list_knowledge_bases() -> str:
         }
     """
     try:
-        items = pg_manager.list_knowledge_bases()
+        items = await pg_manager.list_knowledge_bases()
+        _append_rag_audit(
+            tool_name="list_knowledge_bases",
+            config=config,
+            status="success",
+            details={
+                "result_kb_ids": [item.get("kb_id") for item in items],
+                "result_count": len(items),
+            },
+        )
         return json.dumps({"ok": True, "knowledge_bases": items}, ensure_ascii=False)
     except Exception as e:
         logger.error(f"RAG tool list knowledge bases failed: {e}", exc_info=True)
+        _append_rag_audit(
+            tool_name="list_knowledge_bases",
+            config=config,
+            status="failed",
+            details={"error": str(e)},
+        )
         return json.dumps({"ok": False, "error": str(e), "knowledge_bases": []}, ensure_ascii=False)
 
 
@@ -174,9 +267,10 @@ def list_knowledge_bases() -> str:
     roles=["admin", "sre", "viewer"],
     tags=["rag"],
 )
-def get_knowledge_document(document_id: int) -> str:
+async def get_knowledge_document(document_id: int, config: Optional[RunnableConfig] = None) -> str:
     """
     获取知识库文档全文（只读 content_text，不做 chunk 拼接兜底）。
+    当前 RAG 权限策略为“读共享、写隔离”：读取 completed 文档不按 user_id 隔离。
 
     Args:
         document_id: 文档 ID
@@ -185,8 +279,17 @@ def get_knowledge_document(document_id: int) -> str:
         JSON 字符串。
     """
     try:
-        record = pg_manager.get_document_content(int(document_id))
+        record = await pg_manager.get_document_content(int(document_id))
         if not record:
+            _append_rag_audit(
+                tool_name="get_knowledge_document",
+                config=config,
+                status="failed",
+                details={
+                    "document_id": document_id,
+                    "error": "DOCUMENT_NOT_FOUND",
+                },
+            )
             return json.dumps(
                 {
                     "ok": False,
@@ -197,6 +300,17 @@ def get_knowledge_document(document_id: int) -> str:
             )
 
         if record.get("status") != "completed":
+            _append_rag_audit(
+                tool_name="get_knowledge_document",
+                config=config,
+                status="failed",
+                details={
+                    "document_id": record.get("document_id"),
+                    "kb_id": record.get("kb_id"),
+                    "document_status": record.get("status"),
+                    "error": "DOCUMENT_NOT_READY",
+                },
+            )
             return json.dumps(
                 {
                     "ok": False,
@@ -209,6 +323,17 @@ def get_knowledge_document(document_id: int) -> str:
 
         content_text = record.get("content_text") or ""
         if not content_text.strip():
+            _append_rag_audit(
+                tool_name="get_knowledge_document",
+                config=config,
+                status="failed",
+                details={
+                    "document_id": record.get("document_id"),
+                    "kb_id": record.get("kb_id"),
+                    "document_status": record.get("status"),
+                    "error": "DOCUMENT_CONTENT_NOT_READY",
+                },
+            )
             return json.dumps(
                 {
                     "ok": False,
@@ -219,6 +344,17 @@ def get_knowledge_document(document_id: int) -> str:
                 ensure_ascii=False,
             )
 
+        _append_rag_audit(
+            tool_name="get_knowledge_document",
+            config=config,
+            status="success",
+            details={
+                "document_id": record.get("document_id"),
+                "kb_id": record.get("kb_id"),
+                "filename": record.get("filename"),
+                "content_length": len(content_text),
+            },
+        )
         return json.dumps(
             {
                 "ok": True,
@@ -233,6 +369,15 @@ def get_knowledge_document(document_id: int) -> str:
         )
     except Exception as e:
         logger.error(f"RAG tool get knowledge document failed: {e}", exc_info=True)
+        _append_rag_audit(
+            tool_name="get_knowledge_document",
+            config=config,
+            status="failed",
+            details={
+                "document_id": document_id,
+                "error": str(e),
+            },
+        )
         return json.dumps(
             {
                 "ok": False,
@@ -249,7 +394,7 @@ def get_knowledge_document(document_id: int) -> str:
     roles=["admin", "sre", "viewer"],
     tags=["rag"],
 )
-def get_knowledge_document_context(
+async def get_knowledge_document_context(
     document_id: int,
     query: str,
     before_chars: int = 300,
@@ -257,9 +402,11 @@ def get_knowledge_document_context(
     max_matches: int = 5,
     use_regex: bool = False,
     case_sensitive: bool = False,
+    config: Optional[RunnableConfig] = None,
 ) -> str:
     """
     在文档全文(content_text)中定位 query，并回捞命中前后上下文。
+    当前 RAG 权限策略为“读共享、写隔离”：读取 completed 文档不按 user_id 隔离。
 
     Args:
         document_id: 文档 ID
@@ -278,14 +425,36 @@ def get_knowledge_document_context(
         after_chars = max(50, min(int(after_chars), 2000))
         max_matches = max(1, min(int(max_matches), 20))
 
-        record = pg_manager.get_document_content(int(document_id))
+        record = await pg_manager.get_document_content(int(document_id))
         if not record:
+            _append_rag_audit(
+                tool_name="get_knowledge_document_context",
+                config=config,
+                status="failed",
+                details={
+                    "document_id": document_id,
+                    "query": query,
+                    "error": "DOCUMENT_NOT_FOUND",
+                },
+            )
             return json.dumps(
                 {"ok": False, "error": "DOCUMENT_NOT_FOUND", "document_id": document_id},
                 ensure_ascii=False,
             )
 
         if record.get("status") != "completed":
+            _append_rag_audit(
+                tool_name="get_knowledge_document_context",
+                config=config,
+                status="failed",
+                details={
+                    "document_id": record.get("document_id"),
+                    "kb_id": record.get("kb_id"),
+                    "document_status": record.get("status"),
+                    "query": query,
+                    "error": "DOCUMENT_NOT_READY",
+                },
+            )
             return json.dumps(
                 {
                     "ok": False,
@@ -298,6 +467,18 @@ def get_knowledge_document_context(
 
         content_text = record.get("content_text") or ""
         if not content_text.strip():
+            _append_rag_audit(
+                tool_name="get_knowledge_document_context",
+                config=config,
+                status="failed",
+                details={
+                    "document_id": record.get("document_id"),
+                    "kb_id": record.get("kb_id"),
+                    "document_status": record.get("status"),
+                    "query": query,
+                    "error": "DOCUMENT_CONTENT_NOT_READY",
+                },
+            )
             return json.dumps(
                 {
                     "ok": False,
@@ -313,6 +494,18 @@ def get_knowledge_document_context(
         try:
             regex = re.compile(pattern, flags)
         except re.error as e:
+            _append_rag_audit(
+                tool_name="get_knowledge_document_context",
+                config=config,
+                status="failed",
+                details={
+                    "document_id": record.get("document_id"),
+                    "kb_id": record.get("kb_id"),
+                    "query": query,
+                    "use_regex": use_regex,
+                    "error": f"INVALID_REGEX: {e}",
+                },
+            )
             return json.dumps(
                 {
                     "ok": False,
@@ -342,6 +535,22 @@ def get_knowledge_document_context(
             if len(matches) >= max_matches:
                 break
 
+        _append_rag_audit(
+            tool_name="get_knowledge_document_context",
+            config=config,
+            status="success",
+            details={
+                "document_id": record.get("document_id"),
+                "kb_id": record.get("kb_id"),
+                "filename": record.get("filename"),
+                "query": query,
+                "use_regex": use_regex,
+                "case_sensitive": case_sensitive,
+                "match_count": len(matches),
+                "before_chars": before_chars,
+                "after_chars": after_chars,
+            },
+        )
         return json.dumps(
             {
                 "ok": True,
@@ -360,6 +569,16 @@ def get_knowledge_document_context(
         )
     except Exception as e:
         logger.error(f"RAG tool get document context failed: {e}", exc_info=True)
+        _append_rag_audit(
+            tool_name="get_knowledge_document_context",
+            config=config,
+            status="failed",
+            details={
+                "document_id": document_id,
+                "query": query,
+                "error": str(e),
+            },
+        )
         return json.dumps(
             {
                 "ok": False,

@@ -41,7 +41,7 @@ async def _append_audit_async(entry: Dict):
         event_type=event_type,
         tool_name=str(entry.get("tool")) if entry.get("tool") else None,
         details=entry,
-        status=_status_from_event(event_type),
+        status=str(entry.get("status")) if entry.get("status") else _status_from_event(event_type),
     )
 
     async with AsyncSessionLocal() as db:

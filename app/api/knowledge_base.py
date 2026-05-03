@@ -52,7 +52,6 @@ async def create_knowledge_base(
         name=kb_in.name,
         description=kb_in.description,
         user_id=current_user.id,
-        is_public=kb_in.is_public,
         document_count=0,
         chunk_count=0
     )
@@ -138,7 +137,7 @@ async def update_knowledge_base(
     """
     更新知识库
 
-    - 可以更新名称、描述、公开状态
+    - 可以更新名称、描述
     - 如果更新名称，需要检查是否重复
     """
     # 获取知识库
@@ -171,8 +170,6 @@ async def update_knowledge_base(
         kb.name = kb_update.name
     if kb_update.description is not None:
         kb.description = kb_update.description
-    if kb_update.is_public is not None:
-        kb.is_public = kb_update.is_public
 
     kb.updated_at = datetime.utcnow()
 

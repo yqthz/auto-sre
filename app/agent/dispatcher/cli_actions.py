@@ -1,3 +1,5 @@
+import asyncio
+import inspect
 from typing import Any, Callable, Dict
 
 from app.agent.dispatcher.registry import get_action_meta
@@ -21,4 +23,7 @@ def has_cli_handler(action: str) -> bool:
 
 def run_cli_action(action: str, params: Dict[str, Any]) -> Any:
     handler = _load_handler(action)
-    return handler(**params)
+    result = handler(**params)
+    if inspect.isawaitable(result):
+        return asyncio.run(result)
+    return result

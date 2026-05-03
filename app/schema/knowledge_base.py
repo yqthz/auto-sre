@@ -12,14 +12,12 @@ class KnowledgeBaseCreate(BaseModel):
     """创建知识库请求"""
     name: str = Field(..., min_length=1, max_length=255, description="知识库名称")
     description: Optional[str] = Field(None, description="知识库描述")
-    is_public: bool = Field(False, description="是否公开")
 
 
 class KnowledgeBaseUpdate(BaseModel):
     """更新知识库请求"""
     name: Optional[str] = Field(None, min_length=1, max_length=255, description="知识库名称")
     description: Optional[str] = Field(None, description="知识库描述")
-    is_public: Optional[bool] = Field(None, description="是否公开")
 
 
 class KnowledgeBaseResponse(BaseModel):
@@ -28,7 +26,6 @@ class KnowledgeBaseResponse(BaseModel):
     name: str
     description: Optional[str]
     user_id: int
-    is_public: bool
     created_at: datetime
     updated_at: datetime
     document_count: int
@@ -88,29 +85,4 @@ class DocumentChunkResponse(BaseModel):
 class DocumentChunkListResponse(BaseModel):
     """文档分块列表响应"""
     chunks: List[DocumentChunkResponse]
-    total: int
-
-
-# ============ 搜索 Schema ============
-
-class SearchRequest(BaseModel):
-    """搜索请求"""
-    query: str = Field(..., min_length=1, description="搜索查询")
-    kb_id: Optional[int] = Field(None, description="指定知识库 ID（可选）")
-    top_k: int = Field(5, ge=1, le=20, description="返回结果数量")
-
-
-class SearchResult(BaseModel):
-    """搜索结果"""
-    content: str
-    metadata: Optional[dict]
-    score: float
-    document_id: int
-    filename: str
-
-
-class SearchResponse(BaseModel):
-    """搜索响应"""
-    query: str
-    results: List[SearchResult]
     total: int

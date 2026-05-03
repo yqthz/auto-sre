@@ -4,6 +4,7 @@ RAG 文档处理服务
 """
 import os
 import hashlib
+import json
 from typing import Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -35,9 +36,7 @@ class DocumentService:
         type_map = {
             '.pdf': 'pdf',
             '.txt': 'txt',
-            '.md': 'md',
-            '.docx': 'docx',
-            '.doc': 'doc'
+            '.md': 'md'
         }
         return type_map.get(ext, 'unknown')
 
@@ -134,7 +133,10 @@ class DocumentService:
                     chunk_index=i,
                     content=chunk_text,
                     embedding=embedding,
-                    metadata_=f'{{"chunk_index": {i}, "source": "{document.filename}"}}'
+                    metadata_=json.dumps(
+                        {"chunk_index": i, "source": document.filename},
+                        ensure_ascii=False,
+                    )
                 )
                 db.add(chunk)
 
