@@ -67,13 +67,38 @@ def _build_fingerprint(alert) -> str:
 
 
 async def _mark_analysis_status(alert_event_id: int, status: str):
+    values = {"analysis_status": status}
+    if status == "running":
+        values["analysis_started_at"] = datetime.utcnow()
+
     async with AsyncSessionLocal() as db:
         await db.execute(
             update(AlertEvent)
             .where(AlertEvent.id == alert_event_id)
-            .values(analysis_status=status)
+            .values(**values)
         )
         await db.commit()
+
+
+def _extract_log_error_warn_count(log_summary: Any) -> int:
+    if not isinstance(log_summary, dict):
+        return 0
+
+    entries = log_summary.get("entries")
+    if not isinstance(entries, list):
+        return 0
+
+    total = 0
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        count = item.get("count", 0)
+        try:
+            total += int(count)
+        except (TypeError, ValueError):
+            continue
+
+    return max(total, 0)
 
 
 async def save_analysis_results(thread_id: str, alert_event_id: int, analysis_status: str):
@@ -114,6 +139,18 @@ async def save_analysis_results(thread_id: str, alert_event_id: int, analysis_st
 
         analysis_report = _safe_json_loads(report_text)
 
+        analysis_completed_at = datetime.utcnow()
+        started_at_result = await db.execute(select(AlertEvent.analysis_started_at).where(AlertEvent.id == alert_event_id))
+        analysis_started_at = started_at_result.scalar_one_or_none()
+
+        analysis_duration_sec = None
+        if analysis_started_at:
+            analysis_duration_sec = int((analysis_completed_at - analysis_started_at).total_seconds())
+            if analysis_duration_sec < 0:
+                analysis_duration_sec = 0
+
+        log_error_warn_count = _extract_log_error_warn_count(log_summary)
+
         await db.execute(
             update(AlertEvent)
             .where(AlertEvent.id == alert_event_id)
@@ -122,6 +159,9 @@ async def save_analysis_results(thread_id: str, alert_event_id: int, analysis_st
                 log_summary=log_summary,
                 analysis_report=analysis_report,
                 analysis_status=analysis_status,
+                analysis_completed_at=analysis_completed_at,
+                analysis_duration_sec=analysis_duration_sec,
+                log_error_warn_count=log_error_warn_count,
             )
         )
         await db.commit()
@@ -302,6 +342,10 @@ async def receive_alert(
                         annotations=alert.annotations,
                         thread_id=thread_id,
                         analysis_status="pending",
+                        analysis_started_at=None,
+                        analysis_completed_at=None,
+                        analysis_duration_sec=None,
+                        log_error_warn_count=0,
                         metrics_snapshot=None,
                         log_summary=None,
                         analysis_report=None,

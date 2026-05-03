@@ -11,6 +11,8 @@ class AgentState(TypedDict, total=False):
     report: str | None
     evidence: List[Dict[str, Any]]
     hypotheses: List[Dict[str, Any]]
+    timeline_candidates: List[Dict[str, Any]]
+    root_cause_candidates: List[Dict[str, Any]]
     approval_requests: List[Dict[str, Any]]
     actions_executed: List[Dict[str, Any]]
     trace_run_id: str | None
