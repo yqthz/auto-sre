@@ -1,14 +1,18 @@
 import hashlib
 import json
+import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnableConfig
 
 from app.agent.prompts.diagnoser_system_prompt import DIAGNOSER_SYSTEM_PROMPT
 from app.agent.state import AgentState
 from app.agent.tools.tool_manager import get_agent_tools
+from app.agent.trace_runtime import extract_usage_from_llm_response, trace_runtime
 from app.core.logger import logger
 from app.utils.llm_utils import get_llm
 
@@ -21,6 +25,13 @@ LEGACY_EVIDENCE_TOOLS = {
     "query_prometheus_metrics": "prometheus.query_prometheus_metrics",
     "analyze_log_around_alert": "log.analyze_log_around_alert",
 }
+
+
+def _run_id_from_config(config: Optional[RunnableConfig]) -> Optional[str]:
+    cfg = dict(config or {})
+    configurable = dict(cfg.get("configurable") or {})
+    run_id = configurable.get("trace_run_id")
+    return str(run_id) if run_id else None
 
 
 def _safe_json_loads(raw: Any):
@@ -128,7 +139,7 @@ def _collect_hypotheses(messages: List[Any], existing: List[Dict[str, Any]]) -> 
     return hypotheses
 
 
-def diagnoser_node(state: AgentState):
+def diagnoser_node(state: AgentState, config: Optional[RunnableConfig] = None):
     messages = state["messages"]
     alert_context = state.get("alert_context", {})
     alert_context_str = json.dumps(alert_context, ensure_ascii=False, indent=2)
@@ -156,7 +167,44 @@ def diagnoser_node(state: AgentState):
 
     llm_with_tools = llm.bind_tools(tools)
     chain = prompt | llm_with_tools
+
+    run_id = _run_id_from_config(config)
+    call_id = uuid.uuid4().hex
+    started = time.time()
+
+    current_input = ""
+    if messages:
+        last_msg = messages[-1]
+        content = getattr(last_msg, "content", "")
+        current_input = content if isinstance(content, str) else str(content)
+
+    if run_id:
+        trace_runtime.append_event(
+            run_id=run_id,
+            event_type="llm_call_start",
+            call_id=call_id,
+            status="running",
+            meta={"input": current_input},
+        )
+
     response = chain.invoke({"history": messages, "alert_info": alert_context_str})
+
+    if run_id:
+        output = response.content if isinstance(response.content, str) else str(response.content)
+        usage = extract_usage_from_llm_response(response)
+        duration_ms = max(0, int((time.time() - started) * 1000))
+        meta = {"output": output}
+        if usage:
+            meta["usage"] = usage
+            trace_runtime.add_usage(run_id, usage)
+        trace_runtime.append_event(
+            run_id=run_id,
+            event_type="llm_call_end",
+            call_id=call_id,
+            status="success",
+            duration_ms=duration_ms,
+            meta=meta,
+        )
 
     hypotheses = _collect_hypotheses([response], hypotheses)
 

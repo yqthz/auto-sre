@@ -13,3 +13,4 @@ class AgentState(TypedDict, total=False):
     hypotheses: List[Dict[str, Any]]
     approval_requests: List[Dict[str, Any]]
     actions_executed: List[Dict[str, Any]]
+    trace_run_id: str | None

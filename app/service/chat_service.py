@@ -3,6 +3,8 @@ AI Chat 消息服务层
 处理消息发送、Agent 执行、流式响应等核心逻辑
 """
 import json
+import time
+import uuid
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Dict, Any, Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +14,7 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from app.model.chat import ChatSession, ChatMessage
 from app.agent.graph import create_graph
 from app.agent.approval_policy import tool_approval_profile
+from app.agent.trace_runtime import trace_runtime
 from app.core.logger import logger
 
 
@@ -167,6 +170,47 @@ class ChatService:
                     return tc
         return None
 
+    
+    def _trace_run_id_from_state(snapshot_values: dict) -> Optional[str]:
+        run_id = snapshot_values.get("trace_run_id")
+        return str(run_id) if run_id else None
+
+    
+    def _safe_text(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        return str(value)
+
+    def _trace_tool_start(self, run_id: Optional[str], tool_call: dict) -> None:
+        if not run_id:
+            return
+        call_id = str(tool_call.get("id") or uuid.uuid4().hex)
+        trace_runtime.append_event(
+            run_id=run_id,
+            event_type="tool_call_start",
+            call_id=call_id,
+            status="running",
+            meta={
+                "tool_name": str(tool_call.get("name") or "unknown"),
+                "input": tool_call.get("args", {}),
+            },
+        )
+
+    def _trace_tool_end(self, run_id: Optional[str], tool_message: ToolMessage) -> None:
+        if not run_id:
+            return
+        call_id = str(tool_message.tool_call_id or uuid.uuid4().hex)
+        trace_runtime.append_event(
+            run_id=run_id,
+            event_type="tool_call_end",
+            call_id=call_id,
+            status="success",
+            meta={
+                "tool_name": str(tool_message.name or "unknown"),
+                "output": self._safe_text(tool_message.content),
+            },
+        )
+
     def record_approval_outcome(
         self,
         session: ChatSession,
@@ -245,13 +289,20 @@ class ChatService:
         - rejection_reason: 拒绝原因
         """
         try:
+            run_id = trace_runtime.start_run(session_id=session.id, user_id=user_id, mode=session.mode)
             config = {
                 "configurable": {
                     "thread_id": session.thread_id,
                     "user_id": str(user_id),
                     "user_role": user_role,
-                    "mode": session.mode
+                    "mode": session.mode,
+                    "trace_run_id": run_id,
                 }
+            }
+
+            yield {
+                "event": "trace_run_start",
+                "data": {"run_id": run_id}
             }
             snapshot = self.graph.get_state(config)
             snapshot_values = snapshot.values or {}
@@ -388,6 +439,7 @@ class ChatService:
 
                         # 工具执行结果
                         if isinstance(last_message, ToolMessage):
+                            self._trace_tool_end(run_id, last_message)
                             tool_action = {
                                 "tool_call_id": last_message.tool_call_id,
                                 "tool_name": last_message.name,
@@ -460,6 +512,8 @@ class ChatService:
                                             tool_name, tool_call["args"]
                                         )
 
+                                        self._trace_tool_start(run_id, tool_call)
+
                                         yield {
                                             "event": "tool_call_start",
                                             "data": {
@@ -496,6 +550,7 @@ class ChatService:
                                                 "approval_request": approval_request,
                                             }
                                         }
+                                        trace_runtime.end_run(run_id, status="success")
                                         return
 
                             # 保存最终消息
@@ -507,6 +562,7 @@ class ChatService:
                                     content=last_message.content
                                 )
 
+                trace_runtime.end_run(run_id, status="success")
                 yield {
                     "event": "agent_message_complete",
                     "data": {"message": "执行完成"}
@@ -514,6 +570,8 @@ class ChatService:
 
         except Exception as e:
             logger.error(f"Error in continue_agent_execution: {e}", exc_info=True)
+            if "run_id" in locals():
+                trace_runtime.end_run(run_id, status="failed", error_summary=str(e))
             yield {
                 "event": "error",
                 "data": {"message": str(e)}
@@ -554,13 +612,20 @@ class ChatService:
             }
 
             # 2. 构建 LangGraph 配置
+            run_id = trace_runtime.start_run(session_id=session.id, user_id=user_id, mode=session.mode)
             config = {
                 "configurable": {
                     "thread_id": session.thread_id,
                     "user_id": str(user_id),
                     "user_role": user_role,
-                    "mode": session.mode
+                    "mode": session.mode,
+                    "trace_run_id": run_id,
                 }
+            }
+
+            yield {
+                "event": "trace_run_start",
+                "data": {"run_id": run_id}
             }
 
             # 3. 准备初始输入
@@ -572,6 +637,7 @@ class ChatService:
                 "hypotheses": [],
                 "approval_requests": [],
                 "actions_executed": [],
+                "trace_run_id": run_id,
             }
 
             # 4. 流式执行 Agent
@@ -610,6 +676,8 @@ class ChatService:
                                 # 格式化工具调用展示
                                 tool_display = self.format_tool_call_display(tool_call)
                                 shell_command = self.format_shell_command_display(tool_name, args)
+
+                                self._trace_tool_start(run_id, tool_call)
 
                                 yield {
                                     "event": "tool_call_start",
@@ -663,10 +731,12 @@ class ChatService:
                                     }
 
                                     # 暂停执行，等待用户授权
+                                    trace_runtime.end_run(run_id, status="success")
                                     return
 
                     # 工具执行结果
                     elif isinstance(last_message, ToolMessage):
+                        self._trace_tool_end(run_id, last_message)
                         yield {
                             "event": "tool_call_result",
                             "data": {
@@ -696,6 +766,7 @@ class ChatService:
                     tool_calls=current_tool_calls if current_tool_calls else None
                 )
 
+            trace_runtime.end_run(run_id, status="success")
             yield {
                 "event": "agent_message_complete",
                 "data": {"content": assistant_message_content}
@@ -703,6 +774,8 @@ class ChatService:
 
         except Exception as e:
             logger.error(f"Error in stream_agent_response: {e}", exc_info=True)
+            if "run_id" in locals():
+                trace_runtime.end_run(run_id, status="failed", error_summary=str(e))
             yield {
                 "event": "error",
                 "data": {"message": str(e)}

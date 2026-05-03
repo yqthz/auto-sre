@@ -1,7 +1,9 @@
 """
 AI Chat message APIs.
 """
+import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from typing import List
 
@@ -13,6 +15,7 @@ from sqlalchemy.future import select
 from app.agent.approval_policy import APPROVAL_TTL_SECONDS, check_approval_permission, tool_approval_profile
 from app.api import deps
 from app.core.logger import logger
+from app.agent.trace_runtime import trace_runtime
 from app.model.audit_log import AuditLog
 from app.model.chat import ChatMessage, ChatSession
 from app.model.user import User
@@ -353,3 +356,78 @@ async def delete_message(
     await db.commit()
 
     return {"message": "Message deleted successfully"}
+
+@router.get("/trace/runs/{run_id}")
+async def get_trace_run(
+    run_id: str,
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    summary = trace_runtime.get_run(run_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail="Trace run not found")
+    if not trace_runtime.check_owner(run_id, current_user.id):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return summary
+
+
+@router.get("/trace/runs/{run_id}/events")
+async def get_trace_events(
+    run_id: str,
+    since_seq: int = 0,
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    if not trace_runtime.check_owner(run_id, current_user.id):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    payload = trace_runtime.get_events(run_id, since_seq=since_seq)
+    if not payload.get("exists"):
+        raise HTTPException(status_code=404, detail="Trace run not found")
+    return payload
+
+
+@router.get("/trace/runs/{run_id}/stream")
+async def stream_trace_events(
+    run_id: str,
+    current_user: User = Depends(deps.get_current_active_user),
+):
+    if not trace_runtime.check_owner(run_id, current_user.id):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    queue = trace_runtime.subscribe(run_id)
+    if queue is None:
+        raise HTTPException(status_code=404, detail="Trace run not found")
+
+    async def event_generator():
+        heartbeat_seconds = 15.0
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=heartbeat_seconds)
+                except asyncio.TimeoutError:
+                    yield "event: heartbeat\n"
+                    yield f"data: {json.dumps({'ts': time.time()}, ensure_ascii=False)}\n\n"
+                    continue
+
+                if item is None:
+                    yield "event: done\n"
+                    yield "data: {}\n\n"
+                    return
+
+                event_type = str(item.get("type") or "event")
+                yield f"event: {event_type}\n"
+                yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+
+                if event_type == "run_end":
+                    return
+        finally:
+            trace_runtime.unsubscribe(run_id, queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
