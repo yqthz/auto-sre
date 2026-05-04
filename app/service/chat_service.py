@@ -16,6 +16,8 @@ from app.agent.graph import create_graph
 from app.agent.approval_policy import tool_approval_profile
 from app.agent.trace_runtime import trace_runtime
 from app.core.logger import logger
+from app.storage import append_audit
+from app.utils.format_utils import now_iso
 
 
 class ChatService:
@@ -195,6 +197,63 @@ class ChatService:
                 "tool_name": str(tool_call.get("name") or "unknown"),
                 "input": tool_call.get("args", {}),
             },
+        )
+
+    def _audit_tool_request(
+        self,
+        *,
+        tool_call: dict,
+        user_id: int,
+        user_role: str,
+        session: ChatSession,
+        run_id: Optional[str],
+        status: str = "requested",
+    ) -> None:
+        profile = tool_approval_profile(tool_call.get("name", ""), tool_call.get("args", {}))
+        append_audit(
+            {
+                "timestamp": now_iso(),
+                "event": "tool_call_request",
+                "tool": tool_call.get("name"),
+                "args": tool_call.get("args", {}),
+                "tool_call_id": tool_call.get("id"),
+                "user_id": str(user_id),
+                "user_role": user_role,
+                "session_id": session.id,
+                "thread_id": session.thread_id,
+                "mode": session.mode,
+                "trace_run_id": run_id,
+                "status": status,
+                "tool_permission": profile.get("permission"),
+                "risk_level": profile.get("risk_level"),
+                "requires_approval": profile.get("requires_approval"),
+            }
+        )
+
+    def _audit_tool_result(
+        self,
+        *,
+        tool_message: ToolMessage,
+        user_id: int,
+        user_role: str,
+        session: ChatSession,
+        run_id: Optional[str],
+    ) -> None:
+        append_audit(
+            {
+                "timestamp": now_iso(),
+                "event": "tool_call_result",
+                "tool": tool_message.name,
+                "tool_call_id": tool_message.tool_call_id,
+                "user_id": str(user_id),
+                "user_role": user_role,
+                "session_id": session.id,
+                "thread_id": session.thread_id,
+                "mode": session.mode,
+                "trace_run_id": run_id,
+                "status": "success",
+                "result": str(tool_message.content),
+            }
         )
 
     def _trace_tool_end(self, run_id: Optional[str], tool_message: ToolMessage) -> None:
@@ -446,6 +505,13 @@ class ChatService:
                         # 工具执行结果
                         if isinstance(last_message, ToolMessage):
                             self._trace_tool_end(run_id, last_message)
+                            self._audit_tool_result(
+                                tool_message=last_message,
+                                user_id=user_id,
+                                user_role=user_role,
+                                session=session,
+                                run_id=run_id,
+                            )
                             tool_action = {
                                 "tool_call_id": last_message.tool_call_id,
                                 "tool_name": last_message.name,
@@ -519,6 +585,14 @@ class ChatService:
                                         )
 
                                         self._trace_tool_start(run_id, tool_call)
+                                        self._audit_tool_request(
+                                            tool_call=tool_call,
+                                            user_id=user_id,
+                                            user_role=user_role,
+                                            session=session,
+                                            run_id=run_id,
+                                            status="approval_required",
+                                        )
 
                                         yield {
                                             "event": "tool_call_start",
@@ -692,6 +766,14 @@ class ChatService:
                                 shell_command = self.format_shell_command_display(tool_name, args)
 
                                 self._trace_tool_start(run_id, tool_call)
+                                self._audit_tool_request(
+                                    tool_call=tool_call,
+                                    user_id=user_id,
+                                    user_role=user_role,
+                                    session=session,
+                                    run_id=run_id,
+                                    status="approval_required" if is_sensitive else "requested",
+                                )
 
                                 yield {
                                     "event": "tool_call_start",
@@ -754,6 +836,13 @@ class ChatService:
                     # 工具执行结果
                     elif isinstance(last_message, ToolMessage):
                         self._trace_tool_end(run_id, last_message)
+                        self._audit_tool_result(
+                            tool_message=last_message,
+                            user_id=user_id,
+                            user_role=user_role,
+                            session=session,
+                            run_id=run_id,
+                        )
                         yield {
                             "event": "tool_call_result",
                             "data": {
@@ -781,6 +870,13 @@ class ChatService:
 
                     if isinstance(last_message, ToolMessage):
                         self._trace_tool_end(run_id, last_message)
+                        self._audit_tool_result(
+                            tool_message=last_message,
+                            user_id=user_id,
+                            user_role=user_role,
+                            session=session,
+                            run_id=run_id,
+                        )
                         yield {
                             "event": "tool_call_result",
                             "data": {

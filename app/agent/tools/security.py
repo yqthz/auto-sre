@@ -34,24 +34,43 @@ def before_tool_execution(
     mode: str = "manual",
 ):
     """Pre-execution hook: authz + audit request."""
-    security_check(tool_name, args, user_role, mode=mode)
-
+    tool_meta = TOOL_REGISTRY.get(tool_name, {})
+    try:
+        security_check(tool_name, args, user_role, mode=mode)
+    except PermissionError as exc:
+        append_audit({
+            "timestamp": now_iso(),
+            "event": "tool_call_denied",
+            "tool": tool_name,
+            "args": args,
+            "user_id": user_id,
+            "user_role": user_role,
+            "mode": mode,
+            "tool_permission": tool_meta.get("permission"),
+            "status": "denied",
+            "error": str(exc),
+        })
+        raise
     append_audit({
         "timestamp": now_iso(),
         "event": "tool_call_request",
         "tool": tool_name,
+        "tool_permission": tool_meta.get("permission"),
         "args": args,
         "user_id": user_id,
         "user_role": user_role,
+        "mode": mode,
     })
 
 
 def after_tool_execution(tool_name: str, result: str, user_id: str, user_role: str):
     """Post-execution hook: audit result."""
+    tool_meta = TOOL_REGISTRY.get(tool_name, {})
     append_audit({
         "timestamp": now_iso(),
         "event": "tool_call_result",
         "tool": tool_name,
+        "tool_permission": tool_meta.get("permission"),
         "result": result,
         "user_id": user_id,
         "user_role": user_role,

@@ -7,7 +7,7 @@ import time
 from datetime import timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -16,6 +16,7 @@ from app.agent.trace_runtime import trace_runtime
 from app.api import deps
 from app.model.chat import ChatSession
 from app.model.user import User
+from app.service.audit_service import write_audit_log
 
 router = APIRouter()
 AUTO_BOT_EMAIL = "system-autobot@auto-sre.local"
@@ -79,6 +80,7 @@ def _session_payload(session: ChatSession) -> dict:
 
 @router.get("/runs")
 async def list_trace_runs(
+    request: Request,
     session_id: Optional[int] = None,
     status: Optional[str] = None,
     mode: Optional[str] = None,
@@ -88,7 +90,7 @@ async def list_trace_runs(
     db: AsyncSession = Depends(deps.get_db),
 ):
     visible_user_ids = await _visible_trace_user_ids(db)
-    return trace_runtime.list_runs(
+    payload = trace_runtime.list_runs(
         user_id=current_user.id,
         visible_user_ids=visible_user_ids,
         session_id=session_id,
@@ -97,11 +99,25 @@ async def list_trace_runs(
         skip=skip,
         limit=min(max(limit, 0), 200),
     )
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="trace_view",
+        status="success",
+        details={
+            "action": "list_runs",
+            "filters": {"session_id": session_id, "status": status, "mode": mode, "skip": skip, "limit": limit},
+            "result_count": len(payload.get("runs", [])) if isinstance(payload, dict) else None,
+        },
+    )
+    return payload
 
 
 @router.get("/runs/{run_id}")
 async def get_trace_run(
     run_id: str,
+    request: Request,
     current_user: User = Depends(deps.get_current_active_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
@@ -114,12 +130,21 @@ async def get_trace_run(
         visible_user_ids=await _visible_trace_user_ids(db),
     ):
         raise HTTPException(status_code=403, detail="Forbidden")
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="trace_view",
+        status="success",
+        details={"action": "get_run", "run_id": run_id},
+    )
     return summary
 
 
 @router.get("/runs/{run_id}/events")
 async def get_trace_events(
     run_id: str,
+    request: Request,
     since_seq: int = 0,
     current_user: User = Depends(deps.get_current_active_user),
     db: AsyncSession = Depends(deps.get_db),
@@ -134,12 +159,26 @@ async def get_trace_events(
     payload = trace_runtime.get_events(run_id, since_seq=since_seq)
     if not payload.get("exists"):
         raise HTTPException(status_code=404, detail="Trace run not found")
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="trace_view",
+        status="success",
+        details={
+            "action": "get_run_events",
+            "run_id": run_id,
+            "since_seq": since_seq,
+            "event_count": len(payload.get("events", [])) if isinstance(payload, dict) else None,
+        },
+    )
     return payload
 
 
 @router.get("/runs/{run_id}/stream")
 async def stream_trace_events(
     run_id: str,
+    request: Request,
     current_user: User = Depends(deps.get_current_active_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
@@ -153,6 +192,14 @@ async def stream_trace_events(
     queue = trace_runtime.subscribe(run_id)
     if queue is None:
         raise HTTPException(status_code=404, detail="Trace run not found")
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="trace_view",
+        status="success",
+        details={"action": "stream_run_events", "run_id": run_id},
+    )
 
     async def event_generator():
         heartbeat_seconds = 15.0
@@ -192,6 +239,7 @@ async def stream_trace_events(
 
 @router.get("/sessions")
 async def list_trace_sessions(
+    request: Request,
     status: Optional[str] = None,
     mode: Optional[str] = None,
     skip: int = 0,
@@ -207,6 +255,14 @@ async def list_trace_sessions(
         mode=mode,
     )
     if not trace_summaries:
+        await write_audit_log(
+            db,
+            current_user=current_user,
+            request=request,
+            event_type="trace_view",
+            status="success",
+            details={"action": "list_sessions", "filters": {"status": status, "mode": mode, "skip": skip, "limit": limit}, "result_count": 0},
+        )
         return {"sessions": [], "total": 0}
 
     session_ids = [int(summary["session_id"]) for summary in trace_summaries]
@@ -231,15 +287,25 @@ async def list_trace_sessions(
     total = len(rows)
     start = max(skip, 0)
     end = start + min(max(limit, 0), 200)
-    return {
+    payload = {
         "sessions": rows[start:end],
         "total": total,
     }
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="trace_view",
+        status="success",
+        details={"action": "list_sessions", "filters": {"status": status, "mode": mode, "skip": skip, "limit": limit}, "result_count": len(payload["sessions"])},
+    )
+    return payload
 
 
 @router.get("/sessions/{session_id}")
 async def get_trace_session(
     session_id: int,
+    request: Request,
     current_user: User = Depends(deps.get_current_active_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
@@ -249,18 +315,28 @@ async def get_trace_session(
         user_id=current_user.id,
         visible_user_ids=await _visible_trace_user_ids(db),
     )
-    return {
+    payload = {
         "session": _session_payload(session),
         "trace": trace_runtime.get_session_summary(
             session_id=session_id,
             user_id=session.user_id,
         ),
     }
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="trace_view",
+        status="success",
+        details={"action": "get_session", "session_id": session_id},
+    )
+    return payload
 
 
 @router.get("/sessions/{session_id}/runs")
 async def list_session_trace_runs(
     session_id: int,
+    request: Request,
     status: Optional[str] = None,
     mode: Optional[str] = None,
     skip: int = 0,
@@ -274,7 +350,7 @@ async def list_session_trace_runs(
         user_id=current_user.id,
         visible_user_ids=await _visible_trace_user_ids(db),
     )
-    return trace_runtime.list_runs(
+    payload = trace_runtime.list_runs(
         user_id=session.user_id,
         session_id=session_id,
         status=status,
@@ -282,11 +358,21 @@ async def list_session_trace_runs(
         skip=skip,
         limit=min(max(limit, 0), 200),
     )
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="trace_view",
+        status="success",
+        details={"action": "list_session_runs", "session_id": session_id, "filters": {"status": status, "mode": mode, "skip": skip, "limit": limit}},
+    )
+    return payload
 
 
 @router.get("/sessions/{session_id}/events")
 async def get_session_trace_events(
     session_id: int,
+    request: Request,
     since_ts: float = 0,
     limit: int = 500,
     current_user: User = Depends(deps.get_current_active_user),
@@ -298,9 +384,18 @@ async def get_session_trace_events(
         user_id=current_user.id,
         visible_user_ids=await _visible_trace_user_ids(db),
     )
-    return trace_runtime.get_session_events(
+    payload = trace_runtime.get_session_events(
         session_id=session_id,
         user_id=session.user_id,
         since_ts=since_ts,
         limit=min(max(limit, 0), 2000),
     )
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="trace_view",
+        status="success",
+        details={"action": "get_session_events", "session_id": session_id, "since_ts": since_ts, "limit": limit},
+    )
+    return payload

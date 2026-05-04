@@ -21,6 +21,7 @@ from app.model.alert_event import AlertEvent
 from app.model.chat import ChatSession
 from app.model.user import User
 from app.schema.alert_info import WebhookPayload
+from app.service.audit_service import write_system_audit_log
 from app.utils.format_utils import gen_id
 
 router = APIRouter()
@@ -342,6 +343,22 @@ def run_agent(
     asyncio.run_coroutine_threadsafe(
         save_analysis_results(thread_id, alert_event_id, final_status), app_loop
     ).result()
+    asyncio.run_coroutine_threadsafe(
+        write_system_audit_log(
+            user_id=AUTO_BOT_USER_ID,
+            user_role=AUTO_BOT_ROLE,
+            event_type="alert_analysis",
+            status="success" if success else "failed",
+            details={
+                "alert_event_id": alert_event_id,
+                "thread_id": thread_id,
+                "session_id": session_id,
+                "trace_run_id": run_id,
+                "analysis_status": final_status,
+            },
+        ),
+        app_loop,
+    ).result()
 
 
 @router.post("/alertmanager")
@@ -437,6 +454,25 @@ async def receive_alert(
                     )
                 )
                 await db.commit()
+                await write_system_audit_log(
+                    user_id=AUTO_BOT_USER_ID,
+                    user_role=AUTO_BOT_ROLE,
+                    event_type="alert_receive",
+                    status="success",
+                    details={
+                        "alert_event_id": existing.id,
+                        "fingerprint": fingerprint,
+                        "alert_name": alert_name,
+                        "severity": severity,
+                        "alert_status": alert.status,
+                        "instance": instance,
+                        "thread_id": thread_id,
+                        "session_id": trace_session.id,
+                        "duplicate": True,
+                        "labels": alert.labels,
+                        "annotations": alert.annotations,
+                    },
+                )
 
                 logger.info(
                     "Reused existing alert event and scheduling investigation task: "
@@ -490,6 +526,25 @@ async def receive_alert(
             db.add(event)
             await db.commit()
             await db.refresh(event)
+            await write_system_audit_log(
+                user_id=AUTO_BOT_USER_ID,
+                user_role=AUTO_BOT_ROLE,
+                event_type="alert_receive",
+                status="success",
+                details={
+                    "alert_event_id": event.id,
+                    "fingerprint": fingerprint,
+                    "alert_name": alert_name,
+                    "severity": severity,
+                    "alert_status": alert.status,
+                    "instance": instance,
+                    "thread_id": thread_id,
+                    "session_id": trace_session.id,
+                    "duplicate": False,
+                    "labels": alert.labels,
+                    "annotations": alert.annotations,
+                },
+            )
 
             logger.info(
                 "Created new alert event and scheduling investigation task: "
@@ -518,6 +573,22 @@ async def receive_alert(
                 )
             )
             await db.commit()
+            await write_system_audit_log(
+                user_id=AUTO_BOT_USER_ID,
+                user_role=AUTO_BOT_ROLE,
+                event_type="alert_update",
+                status="success",
+                details={
+                    "fingerprint": fingerprint,
+                    "alert_name": alert_name,
+                    "severity": severity,
+                    "alert_status": alert.status,
+                    "instance": instance,
+                    "ends_at": ends_at.isoformat() if ends_at else None,
+                    "labels": alert.labels,
+                    "annotations": alert.annotations,
+                },
+            )
 
     return {"status": "accepted", "msg": "Investigation started in background"}
 

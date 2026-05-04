@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,8 @@ from app.schema.alert_event import (
     AlertEventListItem,
     AlertEventListResponse,
 )
+from app.model.user import User
+from app.service.audit_service import write_audit_log
 
 router = APIRouter()
 
@@ -42,10 +44,11 @@ def _calc_p95(values: list[int]) -> float:
 
 @router.get("/alerts/stats")
 async def get_alert_stats(
+    request: Request,
     start_time: Optional[datetime] = Query(None, description="统计开始时间，ISO8601，默认最近24小时"),
     end_time: Optional[datetime] = Query(None, description="统计结束时间，ISO8601，默认当前时间"),
     top_n: int = Query(5, ge=1, le=20, description="Top 告警类型数量，默认5，最大20"),
-    _current_user=Depends(deps.get_current_active_user),
+    current_user: User = Depends(deps.get_current_active_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
     start, end = _resolve_stats_window(start_time, end_time)
@@ -124,7 +127,7 @@ async def get_alert_stats(
         for row in top_alert_names_result.all()
     ]
 
-    return {
+    payload = {
         "window": {
             "start_time": _to_utc_text(start),
             "end_time": _to_utc_text(end),
@@ -152,15 +155,25 @@ async def get_alert_stats(
             "alert_name_top": top_alert_names,
         },
     }
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="alert_view",
+        status="success",
+        details={"action": "stats", "start_time": _to_utc_text(start), "end_time": _to_utc_text(end), "top_n": top_n},
+    )
+    return payload
 
 
 @router.get("/alerts", response_model=AlertEventListResponse)
 async def list_alerts(
+    request: Request,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     status: Optional[str] = Query(None),
     severity: Optional[str] = Query(None),
-    _current_user=Depends(deps.get_current_active_user),
+    current_user: User = Depends(deps.get_current_active_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
     query = select(AlertEvent)
@@ -205,13 +218,27 @@ async def list_alerts(
             )
         )
 
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="alert_view",
+        status="success",
+        details={
+            "action": "list",
+            "filters": {"page": page, "limit": limit, "status": status, "severity": severity},
+            "result_count": len(items),
+            "total": total,
+        },
+    )
     return AlertEventListResponse(items=items, total=total, page=page, limit=limit)
 
 
 @router.get("/alerts/{alert_id}", response_model=AlertEventDetailResponse)
 async def get_alert_detail(
     alert_id: int,
-    _current_user=Depends(deps.get_current_active_user),
+    request: Request,
+    current_user: User = Depends(deps.get_current_active_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
     result = await db.execute(select(AlertEvent).where(AlertEvent.id == alert_id))
@@ -219,6 +246,14 @@ async def get_alert_detail(
     if not event:
         raise HTTPException(status_code=404, detail="Alert event not found")
 
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="alert_view",
+        status="success",
+        details={"action": "detail", "alert_id": alert_id, "alert_name": event.alert_name},
+    )
     return AlertEventDetailResponse(
         id=event.id,
         alert_name=event.alert_name,

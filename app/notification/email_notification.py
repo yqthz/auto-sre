@@ -5,6 +5,8 @@ from email.mime.text import MIMEText
 
 from app.core.config import settings
 from app.core.logger import logger
+from app.storage import append_audit
+from app.utils.format_utils import now_iso
 
 EMAIL_CONFIG = {
     "host": settings.SMTP_HOST,
@@ -17,6 +19,17 @@ EMAIL_CONFIG = {
 def send_email(title: str, content: str):
     """ 发送邮件 """
     if not EMAIL_CONFIG["user"]:
+        append_audit({
+            "timestamp": now_iso(),
+            "event": "notification_send",
+            "user_id": "system",
+            "user_role": "system",
+            "status": "skipped",
+            "channel": "email",
+            "title": title,
+            "receiver": EMAIL_CONFIG["receiver"],
+            "error": "SMTP user is not configured",
+        })
         return
 
     logger.info(f"email config: {EMAIL_CONFIG}")
@@ -32,5 +45,26 @@ def send_email(title: str, content: str):
         server.sendmail(EMAIL_CONFIG["user"], EMAIL_CONFIG["receiver"], message.as_string())
         server.quit()
         logger.info("send email success")
+        append_audit({
+            "timestamp": now_iso(),
+            "event": "notification_send",
+            "user_id": "system",
+            "user_role": "system",
+            "status": "success",
+            "channel": "email",
+            "title": title,
+            "receiver": EMAIL_CONFIG["receiver"],
+        })
     except Exception as e:
         logger.error(f"send email fail {e}")
+        append_audit({
+            "timestamp": now_iso(),
+            "event": "notification_send",
+            "user_id": "system",
+            "user_role": "system",
+            "status": "failed",
+            "channel": "email",
+            "title": title,
+            "receiver": EMAIL_CONFIG["receiver"],
+            "error": str(e),
+        })

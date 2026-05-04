@@ -3,7 +3,7 @@ RAG 知识库管理 API
 """
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, desc
@@ -17,6 +17,7 @@ from app.schema.knowledge_base import (
     KnowledgeBaseResponse,
     KnowledgeBaseListResponse
 )
+from app.service.audit_service import write_audit_log
 
 router = APIRouter()
 
@@ -24,6 +25,7 @@ router = APIRouter()
 @router.post("/knowledge-bases", response_model=KnowledgeBaseResponse)
 async def create_knowledge_base(
     kb_in: KnowledgeBaseCreate,
+    request: Request,
     current_user: User = Depends(deps.get_current_active_user),
     db: AsyncSession = Depends(deps.get_db)
 ):
@@ -59,6 +61,18 @@ async def create_knowledge_base(
     db.add(kb)
     await db.commit()
     await db.refresh(kb)
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="knowledge_base_create",
+        status="success",
+        details={
+            "kb_id": kb.id,
+            "name": kb.name,
+            "description": kb.description,
+        },
+    )
 
     return kb
 
@@ -131,6 +145,7 @@ async def get_knowledge_base(
 async def update_knowledge_base(
     kb_id: int,
     kb_update: KnowledgeBaseUpdate,
+    request: Request,
     current_user: User = Depends(deps.get_current_active_user),
     db: AsyncSession = Depends(deps.get_db)
 ):
@@ -150,6 +165,11 @@ async def update_knowledge_base(
 
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
+
+    old_data = {
+        "name": kb.name,
+        "description": kb.description,
+    }
 
     # 检查名称是否重复
     if kb_update.name and kb_update.name != kb.name:
@@ -175,6 +195,21 @@ async def update_knowledge_base(
 
     await db.commit()
     await db.refresh(kb)
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="knowledge_base_update",
+        status="success",
+        details={
+            "kb_id": kb.id,
+            "old_data": old_data,
+            "new_data": {
+                "name": kb.name,
+                "description": kb.description,
+            },
+        },
+    )
 
     return kb
 
@@ -182,6 +217,7 @@ async def update_knowledge_base(
 @router.delete("/knowledge-bases/{kb_id}")
 async def delete_knowledge_base(
     kb_id: int,
+    request: Request,
     current_user: User = Depends(deps.get_current_active_user),
     db: AsyncSession = Depends(deps.get_db)
 ):
@@ -204,10 +240,25 @@ async def delete_knowledge_base(
 
     # 统计信息（用于返回）
     doc_count = kb.document_count
+    deleted_kb = {
+        "kb_id": kb.id,
+        "name": kb.name,
+        "description": kb.description,
+        "document_count": kb.document_count,
+        "chunk_count": kb.chunk_count,
+    }
 
     # 删除知识库（级联删除文档和分块）
     await db.delete(kb)
     await db.commit()
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="knowledge_base_delete",
+        status="success",
+        details=deleted_kb,
+    )
 
     return {
         "message": "Knowledge base deleted successfully",

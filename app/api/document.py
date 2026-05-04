@@ -4,7 +4,7 @@ RAG 文档管理 API
 import os
 import tempfile
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, BackgroundTasks, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, desc
@@ -19,6 +19,7 @@ from app.schema.knowledge_base import (
     DocumentChunkListResponse
 )
 from app.service.document_service import document_service
+from app.service.audit_service import write_audit_log, write_system_audit_log
 from app.rag.storage_manager import storage
 from app.core.logger import logger
 
@@ -29,6 +30,7 @@ router = APIRouter()
 async def upload_document(
     kb_id: int,
     background_tasks: BackgroundTasks,
+    request: Request,
     file: UploadFile = File(...),
     current_user: User = Depends(deps.get_current_active_user),
     db: AsyncSession = Depends(deps.get_db)
@@ -104,6 +106,23 @@ async def upload_document(
             file_type=file_type,
             minio_url=minio_url
         )
+        await write_audit_log(
+            db,
+            current_user=current_user,
+            request=request,
+            event_type="document_upload",
+            status="success",
+            details={
+                "kb_id": kb_id,
+                "kb_name": kb.name,
+                "doc_id": document.id,
+                "filename": document.filename,
+                "file_hash": file_hash,
+                "file_size": file_size,
+                "file_type": file_type,
+                "minio_url": minio_url,
+            },
+        )
 
         # 后台处理文档
         background_tasks.add_task(
@@ -138,6 +157,22 @@ async def process_document_background(db: AsyncSession, document_id: int, temp_f
 
         # 处理文档
         success, message = await document_service.process_document(db, document, temp_file_path)
+        kb_result = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == document.kb_id))
+        kb = kb_result.scalars().first()
+        await write_system_audit_log(
+            user_id=str(kb.user_id) if kb else "unknown",
+            user_role="unknown",
+            event_type="document_process",
+            status="success" if success else "failed",
+            details={
+                "kb_id": document.kb_id,
+                "doc_id": document.id,
+                "filename": document.filename,
+                "chunk_count": document.chunk_count,
+                "message": message,
+            },
+            error_message=None if success else message,
+        )
 
         if success:
             logger.info(f"Document {document_id} processed successfully")
@@ -243,6 +278,7 @@ async def get_document(
 async def delete_document(
     kb_id: int,
     doc_id: int,
+    request: Request,
     current_user: User = Depends(deps.get_current_active_user),
     db: AsyncSession = Depends(deps.get_db)
 ):
@@ -274,11 +310,40 @@ async def delete_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
+    deleted_document = {
+        "kb_id": kb_id,
+        "kb_name": kb.name,
+        "doc_id": document.id,
+        "filename": document.filename,
+        "file_hash": document.file_hash,
+        "file_size": document.file_size,
+        "file_type": document.file_type,
+        "chunk_count": document.chunk_count,
+        "status": document.status,
+    }
+
     # 删除文档
     success, message = await document_service.delete_document(db, document)
 
     if not success:
+        await write_audit_log(
+            db,
+            current_user=current_user,
+            request=request,
+            event_type="document_delete",
+            status="failed",
+            details=deleted_document,
+            error_message=message,
+        )
         raise HTTPException(status_code=500, detail=message)
+    await write_audit_log(
+        db,
+        current_user=current_user,
+        request=request,
+        event_type="document_delete",
+        status="success",
+        details={**deleted_document, "message": message},
+    )
 
     return {
         "message": "Document deleted successfully",

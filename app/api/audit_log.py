@@ -15,6 +15,16 @@ from app.schema.audit_log import AuditLogListResponse, AuditLogResponse
 router = APIRouter()
 
 _TOOL_EVENTS = {"tool_call_request", "tool_call_result", "tool_call_denied"}
+_SRE_EVENTS = {
+    *_TOOL_EVENTS,
+    "approval_decision",
+    "alert_receive",
+    "alert_update",
+    "alert_analysis",
+    "alert_view",
+    "notification_send",
+    "trace_view",
+}
 _DEFAULT_QUERY_DAYS = 7
 _MAX_DETAILS_CHARS = 16 * 1024
 
@@ -49,7 +59,7 @@ def _apply_role_scope(query, current_user: User):
     if current_user.role == "sre":
         return query.where(
             or_(
-                AuditLog.event_type.in_(_TOOL_EVENTS),
+                AuditLog.event_type.in_(_SRE_EVENTS),
                 AuditLog.tool_name.is_not(None),
             )
         )
