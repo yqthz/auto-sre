@@ -1,0 +1,11 @@
+ALTER TABLE alert_events
+ADD COLUMN IF NOT EXISTS analysis_started_at TIMESTAMP WITHOUT TIME ZONE;
+
+ALTER TABLE alert_events
+ADD COLUMN IF NOT EXISTS analysis_completed_at TIMESTAMP WITHOUT TIME ZONE;
+
+ALTER TABLE alert_events
+ADD COLUMN IF NOT EXISTS analysis_duration_sec INTEGER;
+
+ALTER TABLE alert_events
+ADD COLUMN IF NOT EXISTS log_error_warn_count INTEGER NOT NULL DEFAULT 0;

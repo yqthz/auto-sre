@@ -2,7 +2,7 @@ import uvicorn
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from app.api import auth, webhook, chat_session, chat_message, knowledge_base, document, user, alert, audit_log
+from app.api import auth, webhook, chat_session, chat_message, knowledge_base, document, user, alert, audit_log, trace
 from app.core.logger import configure_logging
 
 configure_logging()
@@ -18,6 +18,7 @@ app.include_router(document.router, prefix='/api/v1/rag', tags=["rag"])
 app.include_router(user.router, prefix='/api/v1/users', tags=["users"])
 app.include_router(alert.router, prefix='/api/v1', tags=["alerts"])
 app.include_router(audit_log.router, prefix='/api/v1/audit-logs', tags=["audit-logs"])
+app.include_router(trace.router, prefix='/api/v1/trace', tags=["trace"])
 
 app.add_middleware(
 CORSMiddleware,

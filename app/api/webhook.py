@@ -7,15 +7,19 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, BackgroundTasks, Depends
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.graph import create_graph
 from app.agent.approval_policy import tool_approval_profile
+from app.agent.trace_runtime import trace_runtime
 from app.agent.tools.security import after_tool_execution, before_tool_execution
 from app.api import deps
 from app.core.logger import logger
 from app.db.session import AsyncSessionLocal
 from app.model.alert_event import AlertEvent
+from app.model.chat import ChatSession
+from app.model.user import User
 from app.schema.alert_info import WebhookPayload
 from app.utils.format_utils import gen_id
 
@@ -24,6 +28,7 @@ graph = create_graph()
 
 AUTO_BOT_USER_ID = "system_autobot"
 AUTO_BOT_ROLE = "viewer"
+AUTO_BOT_EMAIL = "system-autobot@auto-sre.local"
 
 
 def _safe_json_loads(raw: Any):
@@ -78,6 +83,55 @@ async def _mark_analysis_status(alert_event_id: int, status: str):
             .values(**values)
         )
         await db.commit()
+
+
+async def _ensure_auto_bot_user(db: AsyncSession) -> User:
+    result = await db.execute(select(User).where(User.email == AUTO_BOT_EMAIL))
+    user = result.scalars().first()
+    if user:
+        return user
+
+    user = User(
+        email=AUTO_BOT_EMAIL,
+        hashed_password="auto-sre-system-user",
+        role=AUTO_BOT_ROLE,
+        is_active=True,
+    )
+    db.add(user)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        result = await db.execute(select(User).where(User.email == AUTO_BOT_EMAIL))
+        user = result.scalars().first()
+        if user:
+            return user
+        raise
+    await db.refresh(user)
+    return user
+
+
+async def _create_auto_trace_session(
+    db: AsyncSession,
+    *,
+    bot_user_id: int,
+    thread_id: str,
+    alert_name: str,
+    alert_context: Dict[str, Any],
+) -> ChatSession:
+    title = f"[Auto] {alert_name}"
+    session = ChatSession(
+        thread_id=thread_id,
+        user_id=bot_user_id,
+        title=title,
+        mode="auto",
+        status="active",
+        alert_context=alert_context,
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+    return session
 
 
 def _extract_log_error_warn_count(log_summary: Any) -> int:
@@ -170,13 +224,34 @@ async def save_analysis_results(thread_id: str, alert_event_id: int, analysis_st
 def run_agent(
     thread_id: str,
     alert_event_id: int,
+    session_id: int,
+    trace_user_id: int,
     app_loop: asyncio.AbstractEventLoop,
     initial_input: Optional[Dict] = None,
 ):
     """
     后台任务：驱动 Agent 自动运行。
     """
-    config = {"configurable": {"thread_id": thread_id, "mode": "auto", "user_role": AUTO_BOT_ROLE, "user_id": AUTO_BOT_USER_ID}}
+    run_id = trace_runtime.start_run(
+        session_id=session_id,
+        user_id=trace_user_id,
+        mode="auto",
+        trigger_type="alert",
+        alert_event_id=alert_event_id,
+        thread_id=thread_id,
+    )
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "mode": "auto",
+            "user_role": AUTO_BOT_ROLE,
+            "user_id": AUTO_BOT_USER_ID,
+            "trace_run_id": run_id,
+        }
+    }
+    if initial_input is not None:
+        initial_input["trace_run_id"] = run_id
+
     current_input = initial_input
     success = True
     logger.info(f"Thread {thread_id}: Starting loop")
@@ -263,6 +338,7 @@ def run_agent(
             break
 
     final_status = "done" if success else "failed"
+    trace_runtime.end_run(run_id, status="success" if success else "failed")
     asyncio.run_coroutine_threadsafe(
         save_analysis_results(thread_id, alert_event_id, final_status), app_loop
     ).result()
@@ -290,6 +366,7 @@ async def receive_alert(
         instance = alert.labels.get("instance")
 
         if alert.status == "firing":
+            bot_user = await _ensure_auto_bot_user(db)
             stmt = select(AlertEvent).where(AlertEvent.fingerprint == fingerprint)
             result = await db.execute(stmt)
             existing = result.scalars().first()
@@ -297,6 +374,13 @@ async def receive_alert(
             if existing:
                 thread_id = gen_id("thread")
                 alert_context = alert.model_dump() if hasattr(alert, "model_dump") else dict(alert)
+                trace_session = await _create_auto_trace_session(
+                    db,
+                    bot_user_id=bot_user.id,
+                    thread_id=thread_id,
+                    alert_name=alert_name,
+                    alert_context=alert_context,
+                )
                 initial_state = {
                 "user_role": AUTO_BOT_ROLE,
                 "mode": "auto",
@@ -341,6 +425,7 @@ async def receive_alert(
                         labels=alert.labels,
                         annotations=alert.annotations,
                         thread_id=thread_id,
+                        session_id=trace_session.id,
                         analysis_status="pending",
                         analysis_started_at=None,
                         analysis_completed_at=None,
@@ -357,11 +442,26 @@ async def receive_alert(
                     "Reused existing alert event and scheduling investigation task: "
                     f"alert_event_id={existing.id}, thread_id={thread_id}, fingerprint={fingerprint}"
                 )
-                background_tasks.add_task(run_agent, thread_id, existing.id, app_loop, initial_state)
+                background_tasks.add_task(
+                    run_agent,
+                    thread_id,
+                    existing.id,
+                    trace_session.id,
+                    bot_user.id,
+                    app_loop,
+                    initial_state,
+                )
                 continue
 
             thread_id = gen_id("thread")
             alert_context = alert.model_dump() if hasattr(alert, "model_dump") else dict(alert)
+            trace_session = await _create_auto_trace_session(
+                db,
+                bot_user_id=bot_user.id,
+                thread_id=thread_id,
+                alert_name=alert_name,
+                alert_context=alert_context,
+            )
             initial_state = {
                 "user_role": AUTO_BOT_ROLE,
                 "mode": "auto",
@@ -384,6 +484,7 @@ async def receive_alert(
                 starts_at=starts_at or datetime.utcnow(),
                 ends_at=None,
                 thread_id=thread_id,
+                session_id=trace_session.id,
                 analysis_status="pending",
             )
             db.add(event)
@@ -394,7 +495,15 @@ async def receive_alert(
                 "Created new alert event and scheduling investigation task: "
                 f"alert_event_id={event.id}, thread_id={thread_id}, fingerprint={fingerprint}"
             )
-            background_tasks.add_task(run_agent, thread_id, event.id, app_loop, initial_state)
+            background_tasks.add_task(
+                run_agent,
+                thread_id,
+                event.id,
+                trace_session.id,
+                bot_user.id,
+                app_loop,
+                initial_state,
+            )
 
         elif alert.status == "resolved":
             logger.info(f"Mark alert resolved: fingerprint={fingerprint}, ends_at={ends_at}")

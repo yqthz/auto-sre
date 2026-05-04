@@ -201,6 +201,7 @@ async def list_alerts(
                 ends_at=event.ends_at,
                 duration_seconds=duration_seconds,
                 analysis_status=event.analysis_status,
+                session_id=event.session_id,
             )
         )
 
@@ -229,6 +230,7 @@ async def get_alert_detail(
         starts_at=event.starts_at,
         ends_at=event.ends_at,
         analysis_status=event.analysis_status,
+        session_id=event.session_id,
         metrics_snapshot=event.metrics_snapshot,
         log_summary=event.log_summary,
         analysis_report=event.analysis_report,

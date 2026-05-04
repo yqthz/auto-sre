@@ -14,6 +14,7 @@ class AlertEventListItem(BaseModel):
     ends_at: Optional[datetime]
     duration_seconds: int
     analysis_status: str
+    session_id: Optional[int]
 
     class Config:
         from_attributes = True
@@ -37,6 +38,7 @@ class AlertEventDetailResponse(BaseModel):
     starts_at: datetime
     ends_at: Optional[datetime]
     analysis_status: str
+    session_id: Optional[int]
     metrics_snapshot: Optional[Dict[str, Any]]
     log_summary: Optional[Dict[str, Any]]
     analysis_report: Optional[Dict[str, Any]]

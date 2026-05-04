@@ -175,7 +175,8 @@ class ChatService:
         run_id = snapshot_values.get("trace_run_id")
         return str(run_id) if run_id else None
 
-    
+
+    @staticmethod
     def _safe_text(value: Any) -> str:
         if isinstance(value, str):
             return value
@@ -289,7 +290,12 @@ class ChatService:
         - rejection_reason: 拒绝原因
         """
         try:
-            run_id = trace_runtime.start_run(session_id=session.id, user_id=user_id, mode=session.mode)
+            run_id = trace_runtime.start_run(
+                session_id=session.id,
+                user_id=user_id,
+                mode=session.mode,
+                trigger_type="approval_continue",
+            )
             config = {
                 "configurable": {
                     "thread_id": session.thread_id,
@@ -612,7 +618,13 @@ class ChatService:
             }
 
             # 2. 构建 LangGraph 配置
-            run_id = trace_runtime.start_run(session_id=session.id, user_id=user_id, mode=session.mode)
+            run_id = trace_runtime.start_run(
+                session_id=session.id,
+                user_id=user_id,
+                mode=session.mode,
+                trigger_type="message",
+                trigger_message_id=user_msg.id,
+            )
             config = {
                 "configurable": {
                     "thread_id": session.thread_id,
@@ -645,6 +657,7 @@ class ChatService:
 
             assistant_message_content = ""
             current_tool_calls = []
+            should_auto_resume_tools = False
 
             async for event in self.graph.astream(initial_input, config=config, stream_mode="values"):
                 if "messages" in event:
@@ -665,6 +678,7 @@ class ChatService:
                         # 工具调用
                         if last_message.tool_calls:
                             current_tool_calls = last_message.tool_calls
+                            only_non_sensitive = True
 
                             for tool_call in last_message.tool_calls:
                                 tool_name = tool_call["name"]
@@ -694,6 +708,7 @@ class ChatService:
 
                                 # 如果是敏感工具，暂停并等待授权
                                 if is_sensitive:
+                                    only_non_sensitive = False
                                     approval_request = self._build_approval_request(tool_call)
                                     current_values = self.graph.get_state(config).values or {}
                                     self.graph.update_state(
@@ -733,6 +748,8 @@ class ChatService:
                                     # 暂停执行，等待用户授权
                                     trace_runtime.end_run(run_id, status="success")
                                     return
+                            if only_non_sensitive:
+                                should_auto_resume_tools = True
 
                     # 工具执行结果
                     elif isinstance(last_message, ToolMessage):
@@ -755,6 +772,42 @@ class ChatService:
                             tool_call_id=last_message.tool_call_id,
                             tool_name=last_message.name
                         )
+
+            if should_auto_resume_tools:
+                async for event in self.graph.astream(None, config=config, stream_mode="values"):
+                    if "messages" not in event:
+                        continue
+                    last_message = event["messages"][-1]
+
+                    if isinstance(last_message, ToolMessage):
+                        self._trace_tool_end(run_id, last_message)
+                        yield {
+                            "event": "tool_call_result",
+                            "data": {
+                                "tool_call_id": last_message.tool_call_id,
+                                "tool_name": last_message.name,
+                                "result": last_message.content[:1000]
+                            }
+                        }
+                        await self.save_message(
+                            db,
+                            session.id,
+                            "tool",
+                            content=last_message.content,
+                            tool_call_id=last_message.tool_call_id,
+                            tool_name=last_message.name
+                        )
+                    elif isinstance(last_message, AIMessage):
+                        if last_message.content:
+                            delta = last_message.content[len(assistant_message_content):]
+                            if delta:
+                                assistant_message_content = last_message.content
+                                yield {
+                                    "event": "agent_message_delta",
+                                    "data": {"delta": delta}
+                                }
+                        if last_message.tool_calls:
+                            current_tool_calls = last_message.tool_calls
 
             # 5. 保存最终的 AI 消息
             if assistant_message_content or current_tool_calls:
