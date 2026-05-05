@@ -407,11 +407,25 @@ class ChatService:
                 from langchain_core.messages import HumanMessage
 
                 reject_msg = f"用户拒绝执行该操作。原因: {rejection_reason or '未提供原因'}"
+                reject_reason_text = rejection_reason or "rejected by user"
+                rejected_tool_messages: List[ToolMessage] = []
+                if isinstance(last_message, AIMessage) and last_message.tool_calls:
+                    for tc in last_message.tool_calls:
+                        tc_id = tc.get("id")
+                        if not tc_id:
+                            continue
+                        rejected_tool_messages.append(
+                            ToolMessage(
+                                content=f"tool execution skipped: {reject_reason_text}",
+                                tool_call_id=tc_id,
+                                name=tc.get("name"),
+                            )
+                        )
 
                 # 更新状态，添加拒绝消息
                 self.graph.update_state(
                     config,
-                    {"messages": [HumanMessage(content=reject_msg)]},
+                    {"messages": [*rejected_tool_messages, HumanMessage(content=reject_msg)]},
                     as_node="tools"  # 作为 tools 节点的输出
                 )
 
@@ -732,6 +746,7 @@ class ChatService:
             assistant_message_content = ""
             current_tool_calls = []
             should_auto_resume_tools = False
+            traced_tool_call_ids = set()
 
             async for event in self.graph.astream(initial_input, config=config, stream_mode="values"):
                 if "messages" in event:
@@ -753,8 +768,16 @@ class ChatService:
                         if last_message.tool_calls:
                             current_tool_calls = last_message.tool_calls
                             only_non_sensitive = True
+                            processed_tool_call = False
 
                             for tool_call in last_message.tool_calls:
+                                tool_call_id = tool_call.get("id")
+                                if tool_call_id in traced_tool_call_ids:
+                                    continue
+                                if tool_call_id:
+                                    traced_tool_call_ids.add(tool_call_id)
+                                processed_tool_call = True
+
                                 tool_name = tool_call["name"]
                                 args = tool_call["args"]
 
@@ -830,7 +853,7 @@ class ChatService:
                                     # 暂停执行，等待用户授权
                                     trace_runtime.end_run(run_id, status="success")
                                     return
-                            if only_non_sensitive:
+                            if processed_tool_call and only_non_sensitive:
                                 should_auto_resume_tools = True
 
                     # 工具执行结果
@@ -862,7 +885,8 @@ class ChatService:
                             tool_name=last_message.name
                         )
 
-            if should_auto_resume_tools:
+            while should_auto_resume_tools:
+                should_auto_resume_tools = False
                 async for event in self.graph.astream(None, config=config, stream_mode="values"):
                     if "messages" not in event:
                         continue
@@ -904,6 +928,86 @@ class ChatService:
                                 }
                         if last_message.tool_calls:
                             current_tool_calls = last_message.tool_calls
+                            only_non_sensitive = True
+                            processed_tool_call = False
+
+                            for tool_call in last_message.tool_calls:
+                                tool_call_id = tool_call.get("id")
+                                if tool_call_id in traced_tool_call_ids:
+                                    continue
+                                if tool_call_id:
+                                    traced_tool_call_ids.add(tool_call_id)
+                                processed_tool_call = True
+
+                                tool_name = tool_call["name"]
+                                args = tool_call["args"]
+                                is_sensitive = bool(tool_approval_profile(tool_name, args).get("requires_approval", False))
+                                tool_display = self.format_tool_call_display(tool_call)
+                                shell_command = self.format_shell_command_display(tool_name, args)
+
+                                self._trace_tool_start(run_id, tool_call)
+                                self._audit_tool_request(
+                                    tool_call=tool_call,
+                                    user_id=user_id,
+                                    user_role=user_role,
+                                    session=session,
+                                    run_id=run_id,
+                                    status="approval_required" if is_sensitive else "requested",
+                                )
+
+                                yield {
+                                    "event": "tool_call_start",
+                                    "data": {
+                                        "tool_call_id": tool_call["id"],
+                                        "tool_name": tool_name,
+                                        "args": args,
+                                        "display": tool_display,
+                                        "shell_command": shell_command,
+                                        "is_sensitive": is_sensitive,
+                                        "requires_approval": is_sensitive
+                                    }
+                                }
+
+                                if is_sensitive:
+                                    only_non_sensitive = False
+                                    approval_request = self._build_approval_request(tool_call)
+                                    current_values = self.graph.get_state(config).values or {}
+                                    self.graph.update_state(
+                                        config,
+                                        {
+                                            "approval_requests": self._append_state_item(
+                                                current_values, "approval_requests", approval_request
+                                            )
+                                        },
+                                        as_node="sre_agent",
+                                    )
+                                    await self.save_message(
+                                        db,
+                                        session.id,
+                                        "assistant",
+                                        content=assistant_message_content,
+                                        tool_calls=[{**tool_call, "approval_request": approval_request}],
+                                        requires_approval=True,
+                                        status="pending"
+                                    )
+
+                                    session.status = "waiting"
+                                    await db.commit()
+
+                                    yield {
+                                        "event": "tool_approval_required",
+                                        "data": {
+                                            "tool_call_id": tool_call["id"],
+                                            "tool_name": tool_name,
+                                            "message": f"闇€瑕佹偍鐨勬巿鏉冩墠鑳芥墽琛?{tool_name}",
+                                            "approval_request": approval_request,
+                                        }
+                                    }
+                                    trace_runtime.end_run(run_id, status="success")
+                                    return
+
+                            if processed_tool_call and only_non_sensitive:
+                                should_auto_resume_tools = True
 
             # 5. 保存最终的 AI 消息
             if assistant_message_content or current_tool_calls:

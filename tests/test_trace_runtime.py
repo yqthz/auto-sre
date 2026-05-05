@@ -1,4 +1,5 @@
 from app.agent.trace_runtime import TraceRuntime
+import json
 
 
 def test_list_runs_filters_by_user_and_session():
@@ -121,3 +122,24 @@ def test_visible_user_ids_allow_system_trace_visibility():
     assert with_bot["runs"][0]["thread_id"] == "thread_abc"
     assert runtime.check_owner(bot_run, user_id=10, visible_user_ids=[99]) is True
     assert runtime.check_owner(bot_run, user_id=10) is False
+
+
+def test_trace_runtime_writes_jsonl_file(tmp_path):
+    runtime = TraceRuntime(trace_log_dir=str(tmp_path))
+    run_id = runtime.start_run(session_id=1, user_id=10, mode="manual")
+    runtime.append_event(
+        run_id=run_id,
+        event_type="tool_call_start",
+        call_id="tool-1",
+        status="running",
+        meta={"tool": "demo"},
+    )
+    runtime.end_run(run_id, status="success")
+
+    trace_file = tmp_path / f"{run_id}.jsonl"
+    assert trace_file.exists() is True
+
+    records = [json.loads(line) for line in trace_file.read_text(encoding="utf-8").splitlines()]
+    assert [item["record_type"] for item in records] == ["run_start", "event", "run_end"]
+    assert records[1]["type"] == "tool_call_start"
+    assert records[2]["status"] == "success"

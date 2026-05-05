@@ -1,14 +1,18 @@
 import asyncio
+import json
+import os
 import time
 import uuid
+from pathlib import Path
 from threading import RLock
 from typing import Any, Dict, List, Optional
 
 MAX_RUNS = 200
+DEFAULT_TRACE_LOG_DIR = "runtime/trace"
 
 
 class TraceRuntime:
-    def __init__(self) -> None:
+    def __init__(self, trace_log_dir: Optional[str] = None) -> None:
         self._lock = RLock()
         self._events_by_run: Dict[str, List[Dict[str, Any]]] = {}
         self._next_seq_by_run: Dict[str, int] = {}
@@ -16,6 +20,26 @@ class TraceRuntime:
         self._subscribers_by_run: Dict[str, List[asyncio.Queue]] = {}
         self._runs_by_session: Dict[int, List[str]] = {}
         self._run_order: List[str] = []
+        resolved_trace_log_dir = trace_log_dir
+        if resolved_trace_log_dir is None:
+            resolved_trace_log_dir = os.getenv("TRACE_LOG_DIR", DEFAULT_TRACE_LOG_DIR)
+        resolved_trace_log_dir = (resolved_trace_log_dir or "").strip()
+        self._trace_log_dir = Path(resolved_trace_log_dir) if resolved_trace_log_dir else None
+        self._trace_file_by_run: Dict[str, Path] = {}
+        if self._trace_log_dir is not None:
+            self._trace_log_dir.mkdir(parents=True, exist_ok=True)
+
+    def _write_trace_line(self, run_id: str, payload: Dict[str, Any]) -> None:
+        trace_file = self._trace_file_by_run.get(run_id)
+        if trace_file is None:
+            return
+        try:
+            with trace_file.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, ensure_ascii=False))
+                fh.write("\n")
+        except Exception:
+            # Trace file write failures should not break runtime execution.
+            return
 
     def start_run(
         self,
@@ -58,8 +82,26 @@ class TraceRuntime:
             }
             self._runs_by_session.setdefault(session_id, []).append(run_id)
             self._run_order.append(run_id)
+            if self._trace_log_dir is not None:
+                trace_file = self._trace_log_dir / f"{run_id}.jsonl"
+                self._trace_file_by_run[run_id] = trace_file
             self._trim_runs_locked()
 
+        self._write_trace_line(
+            run_id,
+            {
+                "record_type": "run_start",
+                "run_id": run_id,
+                "session_id": session_id,
+                "user_id": user_id,
+                "mode": mode,
+                "trigger_type": trigger_type,
+                "trigger_message_id": trigger_message_id,
+                "alert_event_id": alert_event_id,
+                "thread_id": thread_id,
+                "ts": now,
+            },
+        )
         return run_id
 
     def _trim_runs_locked(self) -> None:
@@ -67,6 +109,7 @@ class TraceRuntime:
             oldest = self._run_order.pop(0)
             self._events_by_run.pop(oldest, None)
             self._next_seq_by_run.pop(oldest, None)
+            self._trace_file_by_run.pop(oldest, None)
             summary = self._run_summary.pop(oldest, None)
             if summary is not None:
                 session_id = int(summary.get("session_id") or 0)
@@ -111,6 +154,14 @@ class TraceRuntime:
             self._next_seq_by_run[run_id] = seq + 1
             subscribers = list(self._subscribers_by_run.get(run_id, []))
 
+        self._write_trace_line(
+            run_id,
+            {
+                "record_type": "event",
+                **event,
+            },
+        )
+
         for q in subscribers:
             try:
                 q.put_nowait(event)
@@ -148,6 +199,17 @@ class TraceRuntime:
             summary["done"] = True
             summary["error_summary"] = error_summary
             subscribers = list(self._subscribers_by_run.get(run_id, []))
+
+        self._write_trace_line(
+            run_id,
+            {
+                "record_type": "run_end",
+                "run_id": run_id,
+                "status": status,
+                "error_summary": error_summary,
+                "ts": now,
+            },
+        )
 
         terminal = {
             "run_id": run_id,

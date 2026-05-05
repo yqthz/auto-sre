@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import sys
 from typing import Any, Dict
@@ -7,6 +8,23 @@ from app.agent.dispatcher.cli_actions import has_cli_handler
 
 DEFAULT_TIMEOUT_SECONDS = 10
 MAX_STDERR_CHARS = 1000
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _decode_process_output(data: bytes | str | None) -> str:
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    return data.decode("utf-8", errors="replace")
+
+
+def _loads_first_json_object(stdout: str) -> Dict[str, Any]:
+    cleaned = _ANSI_ESCAPE_RE.sub("", stdout).lstrip("\ufeff").strip()
+    payload, _idx = json.JSONDecoder().raw_decode(cleaned)
+    if not isinstance(payload, dict):
+        raise ValueError("cli output must be json object")
+    return payload
 
 
 def run_via_cli(action: str, params: Dict[str, Any], timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> Dict[str, Any]:
@@ -33,7 +51,6 @@ def run_via_cli(action: str, params: Dict[str, Any], timeout_seconds: int = DEFA
         proc = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
             timeout=timeout_seconds,
             check=False,
         )
@@ -50,8 +67,8 @@ def run_via_cli(action: str, params: Dict[str, Any], timeout_seconds: int = DEFA
             "kind": "spawn_error",
         }
 
-    stdout = (proc.stdout or "").strip()
-    stderr = (proc.stderr or "").strip()
+    stdout = _decode_process_output(proc.stdout).strip()
+    stderr = _decode_process_output(proc.stderr).strip()
 
     if not stdout:
         return {
@@ -61,18 +78,11 @@ def run_via_cli(action: str, params: Dict[str, Any], timeout_seconds: int = DEFA
         }
 
     try:
-        payload = json.loads(stdout)
+        payload = _loads_first_json_object(stdout)
     except Exception as e:
         return {
             "ok": False,
             "error": f"invalid cli json output: {e}; raw={stdout[:MAX_STDERR_CHARS]}",
-            "kind": "invalid_output",
-        }
-
-    if not isinstance(payload, dict):
-        return {
-            "ok": False,
-            "error": "cli output must be json object",
             "kind": "invalid_output",
         }
 
