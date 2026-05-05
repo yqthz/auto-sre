@@ -65,4 +65,6 @@ Output requirements:
 10. `risk_notes` must be a string.
 11. Do not invent facts. If evidence is insufficient, reflect low confidence in `root_causes` and say evidence is insufficient in `hypothesis`.
 12. Prefer using `timeline_candidates_json` and `root_cause_candidates_json` directly when they are available.
+13. When MySQL internal metrics, host metrics, container-level resource metrics, or business metrics are missing, state that limitation in `risk_notes` instead of making a strong conclusion.
+14. Do not claim code-level root cause or specific slow SQL unless there is direct evidence in the provided logs or metrics.
 """

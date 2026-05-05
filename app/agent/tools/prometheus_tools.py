@@ -11,37 +11,60 @@ ALERT_METRICS_MAP = {
     "HighMemoryUsage": [
         ("heap_usage_percent", 'jvm_memory_used_bytes{area="heap"} / jvm_memory_max_bytes{area="heap"} * 100'),
         ("gc_frequency", 'rate(jvm_gc_pause_seconds_count[5m]) * 60'),
-        ("gc_pause_p99", 'histogram_quantile(0.99, jvm_gc_pause_seconds_bucket)'),
+        ("gc_pause_rate", 'rate(jvm_gc_pause_seconds_sum[5m])'),
     ],
     "HighErrorRate": [
-        ("error_rate", 'rate(http_server_requests_seconds_count{status=~"5.."}[5m])'),
-        ("request_volume", 'rate(http_server_requests_seconds_count[5m])'),
-        ("p99_latency", 'histogram_quantile(0.99, http_server_requests_seconds_bucket)'),
+        ("error_rate", 'sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) by (uri)'),
+        ("request_volume", 'sum(rate(http_server_requests_seconds_count[5m])) by (uri)'),
+        ("p99_latency", 'histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket[5m])) by (le, uri))'),
     ],
     "HighCPUUsage": [
-        ("cpu_usage", "process_cpu_usage * 100"),
+        ("cpu_usage", "(system_cpu_usage or process_cpu_usage) * 100"),
         ("thread_count", "jvm_threads_live_threads"),
     ],
     "HighDatabaseConnections": [
-        ("active_connections", "hikaricp_connections_active"),
-        ("pending_connections", "hikaricp_connections_pending"),
-        ("timeout_count", "hikaricp_connections_timeout_total"),
+        ("connection_usage_percent", "((hikari_connections_active / hikari_connections_max) or (hikaricp_connections_active / hikaricp_connections_max)) * 100"),
+        ("active_connections", "hikari_connections_active or hikaricp_connections_active"),
+        ("max_connections", "hikari_connections_max or hikaricp_connections_max"),
+        ("pending_connections", "hikari_connections_pending or hikaricp_connections_pending"),
+        ("timeout_count", "hikari_connections_timeout_total or hikaricp_connections_timeout_total"),
     ],
     "InstanceDown": [
         ("up", 'up{instance="{instance}"}'),
+    ],
+    "LongGC": [
+        ("gc_pause_rate", "rate(jvm_gc_pause_seconds_sum[5m])"),
+        ("gc_frequency", "rate(jvm_gc_pause_seconds_count[5m]) * 60"),
+        ("heap_usage_percent", 'jvm_memory_used_bytes{area="heap"} / jvm_memory_max_bytes{area="heap"} * 100'),
+    ],
+    "HighThreadCount": [
+        ("thread_count", "jvm_threads_live_threads"),
+        ("thread_daemon_count", "jvm_threads_daemon_threads"),
+        ("p95_latency", "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket[5m])) by (le, uri))"),
+    ],
+    "HighResponseTime": [
+        ("p95_latency", "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket[5m])) by (le, uri))"),
+        ("p99_latency", "histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket[5m])) by (le, uri))"),
+        ("connection_usage_percent", "((hikari_connections_active / hikari_connections_max) or (hikaricp_connections_active / hikaricp_connections_max)) * 100"),
+        ("gc_pause_rate", "rate(jvm_gc_pause_seconds_sum[5m])"),
+        ("thread_count", "jvm_threads_live_threads"),
     ],
 }
 
 METRIC_LABELS = {
     "heap_usage_percent": "堆内存使用率",
     "gc_frequency": "GC 频率",
-    "gc_pause_p99": "GC 暂停 P99",
+    "gc_pause_rate": "GC 暂停耗时速率",
     "error_rate": "5xx 错误率",
     "request_volume": "请求量",
+    "p95_latency": "P95 延迟",
     "p99_latency": "P99 延迟",
     "cpu_usage": "CPU 使用率",
     "thread_count": "线程数",
+    "thread_daemon_count": "守护线程数",
+    "connection_usage_percent": "连接池使用率",
     "active_connections": "活跃连接数",
+    "max_connections": "最大连接数",
     "pending_connections": "等待连接数",
     "timeout_count": "连接超时数",
     "up": "实例存活状态",
@@ -50,13 +73,17 @@ METRIC_LABELS = {
 METRIC_UNITS = {
     "heap_usage_percent": "%",
     "gc_frequency": "次/分钟",
-    "gc_pause_p99": "ms",
+    "gc_pause_rate": "s/s",
     "error_rate": "req/s",
     "request_volume": "req/s",
+    "p95_latency": "s",
     "p99_latency": "s",
     "cpu_usage": "%",
     "thread_count": "count",
+    "thread_daemon_count": "count",
+    "connection_usage_percent": "%",
     "active_connections": "count",
+    "max_connections": "count",
     "pending_connections": "count",
     "timeout_count": "count",
     "up": "bool",
@@ -66,6 +93,14 @@ METRIC_UNITS = {
 def _prometheus_query(promql: str) -> Dict[str, Any]:
     base_url = settings.PROMETHEUS_URL.rstrip("/")
     url = f"{base_url}/api/v1/query?query={quote_plus(promql)}"
+    with urlopen(url, timeout=8) as response:
+        payload = response.read().decode("utf-8", errors="ignore")
+    return json.loads(payload)
+
+
+def _prometheus_get(path: str) -> Dict[str, Any]:
+    base_url = settings.PROMETHEUS_URL.rstrip("/")
+    url = f"{base_url}{path}"
     with urlopen(url, timeout=8) as response:
         payload = response.read().decode("utf-8", errors="ignore")
     return json.loads(payload)
@@ -509,6 +544,123 @@ def query_prometheus_targets_health(job: str = "", instance: str = "") -> str:
             "job": job,
             "instance": instance,
             "metrics": metrics,
+        },
+        ensure_ascii=False,
+    )
+
+
+@register_tool(
+    name="query_prometheus_targets",
+    permission="info",
+    roles=["admin", "sre", "viewer"],
+    tags=["prometheus"],
+)
+def query_prometheus_targets(job: str = "", instance: str = "") -> str:
+    """Query Prometheus /api/v1/targets and return active target health details."""
+    try:
+        data = _prometheus_get("/api/v1/targets")
+    except Exception as e:
+        return json.dumps(
+            {
+                "queried_at": datetime.now(timezone.utc).isoformat(),
+                "ok": False,
+                "error": str(e),
+                "targets": [],
+            },
+            ensure_ascii=False,
+        )
+
+    active = (((data.get("data") or {}).get("activeTargets")) or []) if isinstance(data, dict) else []
+    targets: List[Dict[str, Any]] = []
+    for item in active:
+        if not isinstance(item, dict):
+            continue
+        labels = item.get("labels") or {}
+        discovered = item.get("discoveredLabels") or {}
+        target_job = str(labels.get("job") or discovered.get("__meta_docker_container_label_com_docker_compose_service") or "")
+        target_instance = str(labels.get("instance") or "")
+        if job and target_job != job:
+            continue
+        if instance and target_instance != instance:
+            continue
+        targets.append(
+            {
+                "job": target_job,
+                "instance": target_instance,
+                "health": item.get("health"),
+                "last_scrape": item.get("lastScrape"),
+                "last_scrape_duration": item.get("lastScrapeDuration"),
+                "last_error": item.get("lastError"),
+                "scrape_url": item.get("scrapeUrl"),
+                "labels": labels,
+            }
+        )
+
+    return json.dumps(
+        {
+            "queried_at": datetime.now(timezone.utc).isoformat(),
+            "ok": data.get("status") == "success" if isinstance(data, dict) else False,
+            "job": job,
+            "instance": instance,
+            "target_count": len(targets),
+            "targets": targets,
+        },
+        ensure_ascii=False,
+    )
+
+
+@register_tool(
+    name="query_prometheus_alerts",
+    permission="info",
+    roles=["admin", "sre", "viewer"],
+    tags=["prometheus"],
+)
+def query_prometheus_alerts(alert_name: str = "", state: str = "") -> str:
+    """Query Prometheus /api/v1/alerts and return current alert states."""
+    try:
+        data = _prometheus_get("/api/v1/alerts")
+    except Exception as e:
+        return json.dumps(
+            {
+                "queried_at": datetime.now(timezone.utc).isoformat(),
+                "ok": False,
+                "error": str(e),
+                "alerts": [],
+            },
+            ensure_ascii=False,
+        )
+
+    raw_alerts = (((data.get("data") or {}).get("alerts")) or []) if isinstance(data, dict) else []
+    alerts: List[Dict[str, Any]] = []
+    for item in raw_alerts:
+        if not isinstance(item, dict):
+            continue
+        labels = item.get("labels") or {}
+        current_name = str(labels.get("alertname") or "")
+        current_state = str(item.get("state") or "")
+        if alert_name and current_name != alert_name:
+            continue
+        if state and current_state != state:
+            continue
+        alerts.append(
+            {
+                "state": current_state,
+                "alertname": current_name,
+                "labels": labels,
+                "annotations": item.get("annotations") or {},
+                "active_at": item.get("activeAt"),
+                "value": item.get("value"),
+            }
+        )
+
+    return json.dumps(
+        {
+            "queried_at": datetime.now(timezone.utc).isoformat(),
+            "ok": data.get("status") == "success" if isinstance(data, dict) else False,
+            "alert_name": alert_name,
+            "state": state,
+            "alert_count": len(alerts),
+            "alerts": alerts,
         },
         ensure_ascii=False,
     )

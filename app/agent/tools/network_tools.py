@@ -19,6 +19,7 @@ def _json_result(tool: str, ok: bool, **extra):
     name="check_network_connectivity",
     permission="info",
     roles=["admin", "sre", "viewer"],
+    tags=["network"],
 )
 def check_network_connectivity(target_host: str, port: int, timeout: float = 2.0):
     """从宿主机测试 target_host:port 的 TCP 连通性。"""
@@ -54,6 +55,7 @@ def check_network_connectivity(target_host: str, port: int, timeout: float = 2.0
     name="check_db_tcp_connectivity",
     permission="info",
     roles=["admin", "sre", "viewer"],
+    tags=["network"],
 )
 def check_db_tcp_connectivity(db_host: str, db_port: int, timeout: float = 2.0):
     """从宿主机测试 DB 端口连通性（仅 TCP 探测，不做认证）。"""
@@ -64,6 +66,7 @@ def check_db_tcp_connectivity(db_host: str, db_port: int, timeout: float = 2.0):
     name="curl_http_endpoint",
     permission="moderate",
     roles=["admin", "sre", "viewer"],
+    tags=["network"],
 )
 def curl_http_endpoint(url: str, method: str = "HEAD", timeout: float = 5.0):
     """从宿主机发起 HTTP 请求，method 支持 HEAD/GET，返回结构化结果。"""

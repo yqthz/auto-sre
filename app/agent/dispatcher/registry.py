@@ -12,15 +12,12 @@ ALERT_NAME_ENUM = [
     "HighCPUUsage",
     "HighDatabaseConnections",
     "InstanceDown",
+    "LongGC",
+    "HighThreadCount",
+    "HighResponseTime",
 ]
 
 ACTION_SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
-    "misc.lookup_service_info": {
-        "properties": {
-            "service_name": {"type": "string", "minLength": 1},
-        },
-        "additionalProperties": False,
-    },
     "log.analyze_log_around_alert": {
         "properties": {
             "alert_time": {

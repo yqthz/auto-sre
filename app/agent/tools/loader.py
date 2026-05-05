@@ -10,11 +10,13 @@ _META_TOOL_MODULES = [
 ]
 
 _TOOL_MODULES = [
+    "app.agent.tools.actuator_tools",
+    "app.agent.tools.docker_tools",
     "app.agent.tools.log_analysis_tools",
     "app.agent.tools.network_tools",
+    "app.agent.tools.profile_tools",
     "app.agent.tools.prometheus_tools",
     "app.agent.tools.rag_tools",
-    "app.agent.tools.service_tools",
 ]
 
 

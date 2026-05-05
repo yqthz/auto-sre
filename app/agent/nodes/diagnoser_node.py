@@ -20,7 +20,21 @@ llm = get_llm()
 EVIDENCE_ACTIONS = {
     "prometheus.query_prometheus_metrics",
     "prometheus.query_prometheus_range_metrics",
+    "prometheus.query_prometheus_targets_health",
+    "prometheus.query_prometheus_targets",
+    "prometheus.query_prometheus_alerts",
     "log.analyze_log_around_alert",
+    "actuator.check_actuator_health",
+    "actuator.list_actuator_metrics",
+    "actuator.get_actuator_metric",
+    "docker.docker_compose_ps",
+    "docker.docker_inspect_container",
+    "docker.docker_compose_logs",
+    "docker.docker_service_status_summary",
+    "network.check_network_connectivity",
+    "network.check_db_tcp_connectivity",
+    "network.curl_http_endpoint",
+    "profile.lookup_runtime_profile",
 }
 LEGACY_EVIDENCE_TOOLS = {
     "query_prometheus_metrics": "prometheus.query_prometheus_metrics",
@@ -468,7 +482,7 @@ def diagnoser_node(state: AgentState, config: Optional[RunnableConfig] = None):
     tools = get_agent_tools(
         user_role="viewer",
         mode="auto",
-        tags=["docker", "prometheus", "log"],
+        tags=["docker", "prometheus", "log", "actuator", "network", "profile"],
     )
 
     logger.info(f"diagnoser selected tools count={len(tools)}")
