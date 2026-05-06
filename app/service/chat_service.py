@@ -165,6 +165,7 @@ class ChatService:
         return [*current, item]
 
     def _find_pending_sensitive_tool_call(self, snapshot_values: dict) -> Optional[dict]:
+        """查找等待审批的工具调用"""
         last_message = (snapshot_values.get("messages") or [None])[-1]
         if isinstance(last_message, AIMessage) and last_message.tool_calls:
             for tc in last_message.tool_calls:
@@ -185,6 +186,7 @@ class ChatService:
         return str(value)
 
     def _trace_tool_start(self, run_id: Optional[str], tool_call: dict) -> None:
+        """追踪工具调用"""
         if not run_id:
             return
         call_id = str(tool_call.get("id") or uuid.uuid4().hex)
@@ -257,6 +259,7 @@ class ChatService:
         )
 
     def _trace_tool_end(self, run_id: Optional[str], tool_message: ToolMessage) -> None:
+        """最终工具调用结果"""
         if not run_id:
             return
         call_id = str(tool_message.tool_call_id or uuid.uuid4().hex)
@@ -280,19 +283,24 @@ class ChatService:
         actor_role: str,
         reason: Optional[str] = None,
     ) -> Optional[dict]:
+        """审批结果写回 state"""
         config = {"configurable": {"thread_id": session.thread_id, "mode": session.mode}}
+        # 找到会话图状态
         snapshot = self.graph.get_state(config)
         snapshot_values = snapshot.values or {}
+        # 找到待审批的工具调用
         pending_tool_call = self._find_pending_sensitive_tool_call(snapshot_values)
         if not pending_tool_call:
             return None
 
         tool_call_id = pending_tool_call.get("id")
+        # 从状态中获取 approval_requests
         approval_requests = snapshot_values.get("approval_requests", [])
         if not isinstance(approval_requests, list):
             approval_requests = []
 
         updated_requests = []
+        # 遍历每条审批记录
         for item in approval_requests:
             if not isinstance(item, dict):
                 updated_requests.append(item)
@@ -307,6 +315,7 @@ class ChatService:
                 next_item["reason"] = reason
             updated_requests.append(next_item)
 
+        # 构造 action_record
         action_record = {
             "tool_call_id": tool_call_id,
             "tool_name": pending_tool_call.get("name"),
@@ -320,6 +329,7 @@ class ChatService:
             "timestamp": self._utc_now_iso(),
         }
 
+        # 更新 state
         self.graph.update_state(
             config,
             {
@@ -349,6 +359,7 @@ class ChatService:
         - rejection_reason: 拒绝原因
         """
         try:
+            # 创建 trace run
             run_id = trace_runtime.start_run(
                 session_id=session.id,
                 user_id=user_id,
@@ -369,8 +380,11 @@ class ChatService:
                 "event": "trace_run_start",
                 "data": {"run_id": run_id}
             }
+            # 获取 state
             snapshot = self.graph.get_state(config)
             snapshot_values = snapshot.values or {}
+
+            # 找到最后一个待审批的 tool call
             last_message = (snapshot_values.get("messages") or [None])[-1]
 
             pending_tool_call = None
@@ -385,6 +399,7 @@ class ChatService:
             if not isinstance(approval_requests, list):
                 approval_requests = []
 
+            # 修改审批状态
             def mark_approval_status(status: str, reason: Optional[str] = None) -> List[dict]:
                 updated = []
                 for item in approval_requests:
@@ -406,6 +421,7 @@ class ChatService:
                 # 拒绝执行：注入拒绝消息
                 from langchain_core.messages import HumanMessage
 
+                # 构造拒绝信息
                 reject_msg = f"用户拒绝执行该操作。原因: {rejection_reason or '未提供原因'}"
                 reject_reason_text = rejection_reason or "rejected by user"
                 rejected_tool_messages: List[ToolMessage] = []
@@ -453,6 +469,7 @@ class ChatService:
                         as_node="tools",
                     )
 
+                # 发送 tool rejected
                 yield {
                     "event": "tool_rejected",
                     "data": {"message": reject_msg}
@@ -506,6 +523,7 @@ class ChatService:
                         as_node="tools",
                     )
 
+                # 发送 tool approved
                 yield {
                     "event": "tool_approved",
                     "data": {"message": "工具调用已批准，正在执行..."}
@@ -999,7 +1017,7 @@ class ChatService:
                                         "data": {
                                             "tool_call_id": tool_call["id"],
                                             "tool_name": tool_name,
-                                            "message": f"闇€瑕佹偍鐨勬巿鏉冩墠鑳芥墽琛?{tool_name}",
+                                            "message": f"需要您的授权才能执行 {tool_name}",
                                             "approval_request": approval_request,
                                         }
                                     }

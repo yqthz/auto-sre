@@ -52,6 +52,7 @@ def _normalize_tool_policy(
 
 
 def _load_approval_policy() -> Dict[str, List[str]]:
+    """加载审批策略"""
     raw = os.getenv("AGENT_APPROVAL_POLICY_JSON")
     if not raw:
         return DEFAULT_APPROVAL_POLICY
@@ -74,6 +75,7 @@ def _load_approval_policy() -> Dict[str, List[str]]:
 
 
 def _load_tool_approval_policy() -> Dict[str, Dict[str, List[str]]]:
+    """加载工具审批策略"""
     raw = os.getenv("AGENT_TOOL_APPROVAL_POLICY_JSON")
     if not raw:
         return DEFAULT_TOOL_APPROVAL_POLICY
@@ -106,6 +108,7 @@ APPROVAL_POLICY = _load_approval_policy()
 TOOL_APPROVAL_POLICY = _load_tool_approval_policy()
 
 
+# TODO:
 def tool_approval_profile(tool_name: str, args: dict | None = None) -> Dict[str, str | bool]:
     """
     Unified source of truth for tool approval requirement and risk level.
@@ -153,10 +156,12 @@ def tool_approval_profile(tool_name: str, args: dict | None = None) -> Dict[str,
 
 
 def allowed_roles_for_risk(risk_level: str) -> List[str]:
+    """按风险等级查看拥有权限的角色"""
     return APPROVAL_POLICY.get(risk_level.lower(), ["admin"])
 
 
 def allowed_roles_for_tool_and_risk(tool_name: str, risk_level: str) -> List[str]:
+    """按工具和风险等级查看拥有权限的角色"""
     normalized_risk = risk_level.lower()
     normalized_tool = tool_name.strip().lower()
     if normalized_tool:
@@ -174,11 +179,17 @@ def check_approval_permission(
     approver_role: str,
     tool_name: str | None = None,
 ) -> Tuple[bool, str]:
-    roles = (
-        allowed_roles_for_tool_and_risk(tool_name, risk_level)
-        if tool_name
-        else allowed_roles_for_risk(risk_level)
-    )
+    """审批权限检查"""
+
+    # 查看拥有权限的角色
+    # roles = (
+    #     allowed_roles_for_tool_and_risk(tool_name, risk_level)
+    #     if tool_name
+    #     else allowed_roles_for_risk(risk_level)
+    # )
+
+    # 暂时先按风险级别判断
+    roles = allowed_roles_for_risk(risk_level)
     normalized_role = approver_role.lower()
     if normalized_role in roles:
         return True, ""
