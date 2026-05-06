@@ -26,6 +26,7 @@ class KnowledgeBaseResponse(BaseModel):
     name: str
     description: Optional[str]
     user_id: int
+    owner_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     document_count: int

@@ -22,6 +22,7 @@ from app.service.document_service import document_service
 from app.service.audit_service import write_audit_log, write_system_audit_log
 from app.rag.storage_manager import storage
 from app.core.logger import logger
+from app.api.rag_permissions import can_manage_knowledge_base, rag_audit_details
 
 router = APIRouter()
 
@@ -44,15 +45,14 @@ async def upload_document(
     - 使用文件哈希去重
     """
     # 验证知识库所有权
-    kb_query = select(KnowledgeBase).where(
-        KnowledgeBase.id == kb_id,
-        KnowledgeBase.user_id == current_user.id
-    )
+    kb_query = select(KnowledgeBase).where(KnowledgeBase.id == kb_id)
     kb_result = await db.execute(kb_query)
     kb = kb_result.scalars().first()
 
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
+    if not can_manage_knowledge_base(current_user, kb):
+        raise HTTPException(status_code=403, detail="Only knowledge base owner or admin can upload documents")
 
     # 检查文件类型
     file_type = document_service.get_file_type(file.filename)
@@ -87,10 +87,10 @@ async def upload_document(
         # 上传到 MinIO
         try:
             minio_url = storage.upload_file(
-                str(current_user.id),
+                str(kb.user_id),
                 kb.name,
                 temp_file.name,
-                object_name=f"{current_user.id}/{kb.name}/{file_hash}_{file.filename}"
+                object_name=f"{kb.user_id}/{kb.name}/{file_hash}_{file.filename}"
             )
         except Exception as e:
             os.unlink(temp_file.name)
@@ -112,16 +112,18 @@ async def upload_document(
             request=request,
             event_type="document_upload",
             status="success",
-            details={
-                "kb_id": kb_id,
-                "kb_name": kb.name,
-                "doc_id": document.id,
-                "filename": document.filename,
-                "file_hash": file_hash,
-                "file_size": file_size,
-                "file_type": file_type,
-                "minio_url": minio_url,
-            },
+            details=rag_audit_details(
+                current_user,
+                kb,
+                kb_id=kb_id,
+                kb_name=kb.name,
+                doc_id=document.id,
+                filename=document.filename,
+                file_hash=file_hash,
+                file_size=file_size,
+                file_type=file_type,
+                minio_url=minio_url,
+            ),
         )
 
         # 后台处理文档
@@ -204,10 +206,7 @@ async def list_documents(
     - 按创建时间倒序排列
     """
     # 验证知识库所有权
-    kb_query = select(KnowledgeBase).where(
-        KnowledgeBase.id == kb_id,
-        KnowledgeBase.user_id == current_user.id
-    )
+    kb_query = select(KnowledgeBase).where(KnowledgeBase.id == kb_id)
     kb_result = await db.execute(kb_query)
     kb = kb_result.scalars().first()
 
@@ -250,10 +249,7 @@ async def get_document(
 ):
     """获取单个文档详情"""
     # 验证知识库所有权
-    kb_query = select(KnowledgeBase).where(
-        KnowledgeBase.id == kb_id,
-        KnowledgeBase.user_id == current_user.id
-    )
+    kb_query = select(KnowledgeBase).where(KnowledgeBase.id == kb_id)
     kb_result = await db.execute(kb_query)
     kb = kb_result.scalars().first()
 
@@ -289,15 +285,14 @@ async def delete_document(
     - 会删除 MinIO 中的文件（TODO）
     """
     # 验证知识库所有权
-    kb_query = select(KnowledgeBase).where(
-        KnowledgeBase.id == kb_id,
-        KnowledgeBase.user_id == current_user.id
-    )
+    kb_query = select(KnowledgeBase).where(KnowledgeBase.id == kb_id)
     kb_result = await db.execute(kb_query)
     kb = kb_result.scalars().first()
 
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
+    if not can_manage_knowledge_base(current_user, kb):
+        raise HTTPException(status_code=403, detail="Only knowledge base owner or admin can delete documents")
 
     # 获取文档
     doc_query = select(Document).where(
@@ -310,17 +305,19 @@ async def delete_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    deleted_document = {
-        "kb_id": kb_id,
-        "kb_name": kb.name,
-        "doc_id": document.id,
-        "filename": document.filename,
-        "file_hash": document.file_hash,
-        "file_size": document.file_size,
-        "file_type": document.file_type,
-        "chunk_count": document.chunk_count,
-        "status": document.status,
-    }
+    deleted_document = rag_audit_details(
+        current_user,
+        kb,
+        kb_id=kb_id,
+        kb_name=kb.name,
+        doc_id=document.id,
+        filename=document.filename,
+        file_hash=document.file_hash,
+        file_size=document.file_size,
+        file_type=document.file_type,
+        chunk_count=document.chunk_count,
+        status=document.status,
+    )
 
     # 删除文档
     success, message = await document_service.delete_document(db, document)
@@ -369,10 +366,7 @@ async def list_document_chunks(
     - 用于查看文档是如何被分块的
     """
     # 验证知识库所有权
-    kb_query = select(KnowledgeBase).where(
-        KnowledgeBase.id == kb_id,
-        KnowledgeBase.user_id == current_user.id
-    )
+    kb_query = select(KnowledgeBase).where(KnowledgeBase.id == kb_id)
     kb_result = await db.execute(kb_query)
     kb = kb_result.scalars().first()
 

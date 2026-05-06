@@ -18,6 +18,11 @@ from app.schema.knowledge_base import (
     KnowledgeBaseListResponse
 )
 from app.service.audit_service import write_audit_log
+from app.api.rag_permissions import (
+    can_manage_knowledge_base,
+    knowledge_base_response,
+    rag_audit_details,
+)
 
 router = APIRouter()
 
@@ -71,10 +76,13 @@ async def create_knowledge_base(
             "kb_id": kb.id,
             "name": kb.name,
             "description": kb.description,
+            "actor_user_id": current_user.id,
+            "actor_user_role": current_user.role,
+            "resource_owner_id": kb.user_id,
         },
     )
 
-    return kb
+    return knowledge_base_response(kb, current_user)
 
 
 @router.get("/knowledge-bases", response_model=KnowledgeBaseListResponse)
@@ -93,7 +101,7 @@ async def list_knowledge_bases(
     - 按更新时间倒序排列
     """
     # 构建查询
-    query = select(KnowledgeBase).where(KnowledgeBase.user_id == current_user.id)
+    query = select(KnowledgeBase, User).join(User, KnowledgeBase.user_id == User.id, isouter=True)
 
     # 搜索过滤
     if search:
@@ -103,12 +111,10 @@ async def list_knowledge_bases(
     query = query.order_by(desc(KnowledgeBase.updated_at)).offset(skip).limit(limit)
 
     result = await db.execute(query)
-    kbs = result.scalars().all()
+    rows = result.all()
 
     # 统计总数
-    count_query = select(func.count(KnowledgeBase.id)).where(
-        KnowledgeBase.user_id == current_user.id
-    )
+    count_query = select(func.count(KnowledgeBase.id))
     if search:
         count_query = count_query.where(KnowledgeBase.name.ilike(f"%{search}%"))
 
@@ -116,7 +122,7 @@ async def list_knowledge_bases(
     total = total_result.scalar()
 
     return KnowledgeBaseListResponse(
-        knowledge_bases=[KnowledgeBaseResponse.model_validate(kb) for kb in kbs],
+        knowledge_bases=[knowledge_base_response(kb, owner) for kb, owner in rows],
         total=total
     )
 
@@ -128,17 +134,19 @@ async def get_knowledge_base(
     db: AsyncSession = Depends(deps.get_db)
 ):
     """获取单个知识库详情"""
-    query = select(KnowledgeBase).where(
-        KnowledgeBase.id == kb_id,
-        KnowledgeBase.user_id == current_user.id
+    query = (
+        select(KnowledgeBase, User)
+        .join(User, KnowledgeBase.user_id == User.id, isouter=True)
+        .where(KnowledgeBase.id == kb_id)
     )
     result = await db.execute(query)
-    kb = result.scalars().first()
+    row = result.first()
 
-    if not kb:
+    if not row:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
 
-    return kb
+    kb, owner = row
+    return knowledge_base_response(kb, owner)
 
 
 @router.patch("/knowledge-bases/{kb_id}", response_model=KnowledgeBaseResponse)
@@ -156,15 +164,14 @@ async def update_knowledge_base(
     - 如果更新名称，需要检查是否重复
     """
     # 获取知识库
-    query = select(KnowledgeBase).where(
-        KnowledgeBase.id == kb_id,
-        KnowledgeBase.user_id == current_user.id
-    )
+    query = select(KnowledgeBase).where(KnowledgeBase.id == kb_id)
     result = await db.execute(query)
     kb = result.scalars().first()
 
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
+    if not can_manage_knowledge_base(current_user, kb):
+        raise HTTPException(status_code=403, detail="Only knowledge base owner or admin can update it")
 
     old_data = {
         "name": kb.name,
@@ -174,7 +181,7 @@ async def update_knowledge_base(
     # 检查名称是否重复
     if kb_update.name and kb_update.name != kb.name:
         check_query = select(KnowledgeBase).where(
-            KnowledgeBase.user_id == current_user.id,
+            KnowledgeBase.user_id == kb.user_id,
             KnowledgeBase.name == kb_update.name,
             KnowledgeBase.id != kb_id
         )
@@ -201,17 +208,19 @@ async def update_knowledge_base(
         request=request,
         event_type="knowledge_base_update",
         status="success",
-        details={
-            "kb_id": kb.id,
-            "old_data": old_data,
-            "new_data": {
+        details=rag_audit_details(
+            current_user,
+            kb,
+            kb_id=kb.id,
+            old_data=old_data,
+            new_data={
                 "name": kb.name,
                 "description": kb.description,
             },
-        },
+        ),
     )
 
-    return kb
+    return knowledge_base_response(kb)
 
 
 @router.delete("/knowledge-bases/{kb_id}")
@@ -228,25 +237,26 @@ async def delete_knowledge_base(
     - 需要同时删除 MinIO 中的文件（TODO）
     """
     # 获取知识库
-    query = select(KnowledgeBase).where(
-        KnowledgeBase.id == kb_id,
-        KnowledgeBase.user_id == current_user.id
-    )
+    query = select(KnowledgeBase).where(KnowledgeBase.id == kb_id)
     result = await db.execute(query)
     kb = result.scalars().first()
 
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
+    if not can_manage_knowledge_base(current_user, kb):
+        raise HTTPException(status_code=403, detail="Only knowledge base owner or admin can delete it")
 
     # 统计信息（用于返回）
     doc_count = kb.document_count
-    deleted_kb = {
-        "kb_id": kb.id,
-        "name": kb.name,
-        "description": kb.description,
-        "document_count": kb.document_count,
-        "chunk_count": kb.chunk_count,
-    }
+    deleted_kb = rag_audit_details(
+        current_user,
+        kb,
+        kb_id=kb.id,
+        name=kb.name,
+        description=kb.description,
+        document_count=kb.document_count,
+        chunk_count=kb.chunk_count,
+    )
 
     # 删除知识库（级联删除文档和分块）
     await db.delete(kb)
@@ -282,10 +292,7 @@ async def get_knowledge_base_stats(
     - 文档类型分布
     """
     # 验证知识库所有权
-    kb_query = select(KnowledgeBase).where(
-        KnowledgeBase.id == kb_id,
-        KnowledgeBase.user_id == current_user.id
-    )
+    kb_query = select(KnowledgeBase).where(KnowledgeBase.id == kb_id)
     kb_result = await db.execute(kb_query)
     kb = kb_result.scalars().first()
 
