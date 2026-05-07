@@ -14,6 +14,7 @@ llm = get_llm()
 
 
 def _run_id_from_config(config: Optional[RunnableConfig]) -> Optional[str]:
+    """从 config 中提取 run id"""
     cfg = dict(config or {})
     configurable = dict(cfg.get("configurable") or {})
     run_id = configurable.get("trace_run_id")

@@ -482,7 +482,6 @@ def diagnoser_node(state: AgentState, config: Optional[RunnableConfig] = None):
     tools = get_agent_tools(
         user_role="viewer",
         mode="auto",
-        tags=["docker", "prometheus", "log", "actuator", "network", "profile"],
     )
 
     logger.info(f"diagnoser selected tools count={len(tools)}")

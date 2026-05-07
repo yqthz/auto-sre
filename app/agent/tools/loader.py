@@ -21,6 +21,7 @@ _TOOL_MODULES = [
 
 
 def ensure_dispatcher_meta_tools_loaded() -> None:
+    """加载 meta tool 模块"""
     global _META_LOADED
     if _META_LOADED:
         return
@@ -35,6 +36,7 @@ def ensure_dispatcher_meta_tools_loaded() -> None:
 
 
 def ensure_tool_modules_loaded() -> None:
+    """加载全部工具模块"""
     global _ALL_LOADED
     if _ALL_LOADED:
         return

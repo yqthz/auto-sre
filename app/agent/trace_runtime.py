@@ -461,6 +461,7 @@ def normalize_usage(raw: Any) -> Optional[Dict[str, int]]:
 
 
 def extract_usage_from_llm_response(response: Any) -> Optional[Dict[str, int]]:
+    """从 llm 响应中提取 token 使用量"""
     usage = None
 
     usage_meta = getattr(response, "usage_metadata", None)
@@ -468,17 +469,17 @@ def extract_usage_from_llm_response(response: Any) -> Optional[Dict[str, int]]:
     if usage:
         return usage
 
-    response_meta = getattr(response, "response_metadata", None)
-    if isinstance(response_meta, dict):
-        usage = normalize_usage(response_meta.get("token_usage"))
-        if usage:
-            return usage
+    # response_meta = getattr(response, "response_metadata", None)
+    # if isinstance(response_meta, dict):
+    #     usage = normalize_usage(response_meta.get("token_usage"))
+    #     if usage:
+    #         return usage
 
-    additional_kwargs = getattr(response, "additional_kwargs", None)
-    if isinstance(additional_kwargs, dict):
-        usage = normalize_usage(additional_kwargs.get("usage"))
-        if usage:
-            return usage
+    # additional_kwargs = getattr(response, "additional_kwargs", None)
+    # if isinstance(additional_kwargs, dict):
+    #     usage = normalize_usage(additional_kwargs.get("usage"))
+    #     if usage:
+    #         return usage
 
     return None
 

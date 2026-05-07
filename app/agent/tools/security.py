@@ -6,7 +6,7 @@ from app.utils.format_utils import now_iso
 TOOL_REGISTRY: Dict[str, dict] = {}
 
 
-def security_check(tool_name: str, args: dict, user_role: str, mode: str = "manual"):
+def security_check(tool_name: str, user_role: str, mode: str = "manual"):
     """Security validation for tool call."""
 
     if tool_name not in TOOL_REGISTRY:
@@ -36,7 +36,7 @@ def before_tool_execution(
     """Pre-execution hook: authz + audit request."""
     tool_meta = TOOL_REGISTRY.get(tool_name, {})
     try:
-        security_check(tool_name, args, user_role, mode=mode)
+        security_check(tool_name, user_role, mode=mode)
     except PermissionError as exc:
         append_audit({
             "timestamp": now_iso(),
@@ -85,8 +85,21 @@ def register_tool(
     requires_approval: bool | None = None,
 ):
     """
-    Tool registration decorator.
-    :param tags: labels such as ['docker'], ['ssh'], ['network']
+    Register a callable as an agent tool and store its metadata in ``TOOL_REGISTRY``.
+
+    Args:
+        name: Unique tool name used by the tool router.
+        permission: Coarse permission/risk label used by policy and audit. Common values:
+            - ``info``: low-risk read/diagnostic operations
+            - ``limited`` / ``moderate``: medium-risk operations
+            - ``danger``: high-risk operations
+        roles: Allowed caller roles (for example ``["admin", "sre"]``). Defaults to
+            ``["admin"]`` when omitted.
+        tags: Optional labels for grouping or filtering tools (for example
+            ``["docker"]``, ``["network"]``).
+        requires_approval: Whether the tool is considered approval-gated/sensitive.
+            - ``None`` (default): auto-derived from ``permission == "danger"``
+            - explicit ``True``/``False``: overrides the default derivation
     """
     if roles is None:
         roles = ["admin"]
