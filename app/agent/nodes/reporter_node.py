@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
 
 from app.agent.prompts.report_system_prompt import REPORTER_SYSTEM_PROMPT
@@ -41,8 +41,26 @@ def _is_iso8601(value: str) -> bool:
         return False
 
 
+def _extract_json_object_text(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if len(lines) >= 3 and lines[-1].strip().startswith("```"):
+            body = "\n".join(lines[1:-1]).strip()
+            if body.lower().startswith("json"):
+                body = body[4:].lstrip()
+            raw = body
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return raw[start : end + 1]
+    return raw
+
+
 def reporter_node(state: AgentState, config: Optional[RunnableConfig] = None):
-    messages = state["messages"]
+    messages = state.get("messages", [])
 
     alert_context = state.get("alert_context", {})
     evidence = state.get("evidence", [])
@@ -63,7 +81,6 @@ def reporter_node(state: AgentState, config: Optional[RunnableConfig] = None):
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", REPORTER_SYSTEM_PROMPT),
-            MessagesPlaceholder(variable_name="history"),
         ]
     )
 
@@ -90,7 +107,6 @@ def reporter_node(state: AgentState, config: Optional[RunnableConfig] = None):
 
     response = chain.invoke(
         {
-            "history": messages,
             "alert_info": alert_context_str,
             "evidence_json": evidence_str,
             "hypotheses_json": hypotheses_str,
@@ -120,10 +136,11 @@ def reporter_node(state: AgentState, config: Optional[RunnableConfig] = None):
         )
 
     report_text = response.content if isinstance(response.content, str) else str(response.content)
+    report_json_text = _extract_json_object_text(report_text)
 
     # Validate reporter output as JSON and enforce schema.
     try:
-        parsed = json.loads(report_text)
+        parsed = json.loads(report_json_text)
         if not isinstance(parsed, dict):
             raise ValueError("report JSON must be an object")
 

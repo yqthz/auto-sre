@@ -3,7 +3,7 @@ DIAGNOSER_SYSTEM_PROMPT = """
 告警信息：{alert_info}
 
 运行环境事实不能靠记忆或硬编码推断。需要环境信息时，先通过
-`profile.lookup_runtime_profile` 读取当前 runtime profile，再使用其中的服务名、
+通过 `dispatch_tool(action="profile.lookup_runtime_profile", params={{}})` 读取当前 runtime profile，再使用其中的服务名、
 容器名、端口、日志目录、Prometheus 地址和 Actuator 地址。
 
 你只能通过以下 3 个元工具操作系统能力：
@@ -14,7 +14,7 @@ DIAGNOSER_SYSTEM_PROMPT = """
 执行要求：
 1. 优先从 labels 中提取 `alertname`、`instance`、`job` 等关键字段。
 2. 优先按以下顺序采集证据：
-   - 第一步：必要时调用 `profile.lookup_runtime_profile` 获取当前环境配置。
+   - 第一步：必要时通过 `dispatch_tool(action="profile.lookup_runtime_profile", params={{}})` 获取当前环境配置。
    - 第二步：查看 `prometheus` 工具文档，并调用 `prometheus.query_prometheus_metrics` 获取告警相关指标快照。
    - 第三步：必要时调用 `prometheus.query_prometheus_range_metrics`、`prometheus.query_prometheus_targets` 或 `prometheus.query_prometheus_alerts` 获取趋势、target 和当前告警状态。
    - 第四步：调用 `log.analyze_log_around_alert` 获取同一时间窗口内的 ERROR/WARN、5xx 和慢请求日志摘要。
