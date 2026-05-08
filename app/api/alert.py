@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
-from typing import Optional
+import json
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import desc, func, select
@@ -40,6 +41,21 @@ def _calc_p95(values: list[int]) -> float:
     if index >= len(ordered):
         index = len(ordered) - 1
     return float(ordered[index])
+
+
+def _normalize_json_object(value: Any) -> Optional[dict[str, Any]]:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+    return None
 
 
 @router.get("/alerts/stats")
@@ -266,7 +282,7 @@ async def get_alert_detail(
         ends_at=event.ends_at,
         analysis_status=event.analysis_status,
         session_id=event.session_id,
-        metrics_snapshot=event.metrics_snapshot,
-        log_summary=event.log_summary,
-        analysis_report=event.analysis_report,
+        metrics_snapshot=_normalize_json_object(event.metrics_snapshot),
+        log_summary=_normalize_json_object(event.log_summary),
+        analysis_report=_normalize_json_object(event.analysis_report),
     )

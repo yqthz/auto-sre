@@ -16,6 +16,11 @@ from app.schema.user import UserCreate, UserUpdate, UserResponse, UserListRespon
 from app.core.logger import logger
 
 router = APIRouter()
+SYSTEM_USER_EMAILS = {"system-autobot@auto-sre.local"}
+
+
+def _is_system_user(user: User) -> bool:
+    return user.email in SYSTEM_USER_EMAILS
 
 
 @router.get("/me", response_model=UserResponse)
@@ -60,7 +65,7 @@ async def get_users(
         raise HTTPException(status_code=403, detail="Only admin can access user management")
 
     # 构建查询
-    query = select(User)
+    query = select(User).where(~User.email.in_(SYSTEM_USER_EMAILS))
 
     # 搜索条件
     if search:
@@ -78,7 +83,7 @@ async def get_users(
     query = query.order_by(User.created_at.desc())
 
     # 统计总数
-    count_query = select(func.count(User.id))
+    count_query = select(func.count(User.id)).where(~User.email.in_(SYSTEM_USER_EMAILS))
     if search:
         count_query = count_query.where(User.email.ilike(f"%{search}%"))
     if role:
@@ -92,7 +97,7 @@ async def get_users(
     # 分页查询
     query = query.offset(skip).limit(limit)
     result = await db.execute(query)
-    users = result.scalars().all()
+    users = [user for user in result.scalars().all() if not _is_system_user(user)]
 
     return UserListResponse(
         users=[UserResponse.model_validate(user) for user in users],
