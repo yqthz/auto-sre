@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.graph import create_graph
 from app.agent.approval_policy import tool_approval_profile
 from app.agent.trace_runtime import trace_runtime
-from app.agent.tools.security import after_tool_execution, before_tool_execution
+from app.agent.tools.audit import audit_tool_event
+from app.agent.tools.security import before_tool_execution
 from app.api import deps
 from app.core.logger import logger
 from app.db.session import AsyncSessionLocal
@@ -286,11 +287,35 @@ def run_agent(
 
                     if isinstance(msg, ToolMessage):
                         # 记录工具调用执行结果
-                        after_tool_execution(
-                            tool_name=msg.name,
-                            result=msg.content,
+                        dispatch_extra: Dict[str, Any] = {}
+                        if str(msg.name or "") == "dispatch_tool":
+                            dispatch_payload = _safe_json_loads(msg.content)
+                            if isinstance(dispatch_payload, dict):
+                                dispatch_extra = {
+                                    "action": dispatch_payload.get("action"),
+                                    "dispatch_status": dispatch_payload.get("status"),
+                                    "execution_backend": dispatch_payload.get("execution_backend"),
+                                    "attempts": dispatch_payload.get("attempts"),
+                                    "last_error_kind": dispatch_payload.get("last_error_kind"),
+                                    "risk_level": dispatch_payload.get("risk_level"),
+                                    "requires_approval": dispatch_payload.get("requires_approval"),
+                                }
+                        audit_tool_event(
+                            "tool_call_result",
+                            tool=str(msg.name or "unknown"),
                             user_id=AUTO_BOT_USER_ID,
                             user_role=AUTO_BOT_ROLE,
+                            mode="auto",
+                            thread_id=thread_id,
+                            trace_run_id=run_id,
+                            tool_call_id=msg.tool_call_id,
+                            result=str(msg.content),
+                            status="success",
+                            extra={
+                                "session_id": session_id,
+                                "alert_event_id": alert_event_id,
+                                **dispatch_extra,
+                            },
                         )
                         logger.info(f"Tool {msg.name} executed. Result len: {len(msg.content)}")
 
@@ -318,8 +343,41 @@ def run_agent(
                                 user_role=AUTO_BOT_ROLE,
                                 mode="auto",
                             )
+                            audit_tool_event(
+                                "tool_call_request",
+                                tool=str(tc.get("name") or "unknown"),
+                                user_id=AUTO_BOT_USER_ID,
+                                user_role=AUTO_BOT_ROLE,
+                                mode="auto",
+                                thread_id=thread_id,
+                                trace_run_id=run_id,
+                                tool_call_id=tc.get("id"),
+                                args=tc.get("args", {}),
+                                status="requested",
+                                extra={
+                                    "session_id": session_id,
+                                    "alert_event_id": alert_event_id,
+                                },
+                            )
                         except PermissionError as e:
                             logger.error(f"Security check failed for {tc['name']}: {e}")
+                            audit_tool_event(
+                                "tool_call_denied",
+                                tool=str(tc.get("name") or "unknown"),
+                                user_id=AUTO_BOT_USER_ID,
+                                user_role=AUTO_BOT_ROLE,
+                                mode="auto",
+                                thread_id=thread_id,
+                                trace_run_id=run_id,
+                                tool_call_id=tc.get("id"),
+                                args=tc.get("args", {}),
+                                error=str(e),
+                                status="denied",
+                                extra={
+                                    "session_id": session_id,
+                                    "alert_event_id": alert_event_id,
+                                },
+                            )
 
                             deny_msg = ToolMessage(
                                 tool_call_id=tc["id"],
@@ -627,6 +685,4 @@ async def receive_alert(
             )
 
     return {"status": "accepted", "msg": "Investigation started in background"}
-
-
 

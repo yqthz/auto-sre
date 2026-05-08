@@ -14,10 +14,9 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from app.model.chat import ChatSession, ChatMessage
 from app.agent.graph import create_graph
 from app.agent.approval_policy import tool_approval_profile
+from app.agent.tools.audit import audit_tool_event
 from app.agent.trace_runtime import trace_runtime
 from app.core.logger import logger
-from app.storage import append_audit
-from app.utils.format_utils import now_iso
 
 
 class ChatService:
@@ -185,6 +184,38 @@ class ChatService:
             return value
         return str(value)
 
+    @staticmethod
+    def _dispatch_request_extra(tool_call: dict) -> Dict[str, Any]:
+        if str(tool_call.get("name") or "") != "dispatch_tool":
+            return {}
+        args = tool_call.get("args", {})
+        if not isinstance(args, dict):
+            return {}
+        return {"action": args.get("action")}
+
+    @staticmethod
+    def _dispatch_result_extra(tool_message: ToolMessage) -> Dict[str, Any]:
+        if str(tool_message.name or "") != "dispatch_tool":
+            return {}
+        content = tool_message.content
+        if not isinstance(content, str):
+            return {}
+        try:
+            payload = json.loads(content)
+        except Exception:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            "action": payload.get("action"),
+            "dispatch_status": payload.get("status"),
+            "execution_backend": payload.get("execution_backend"),
+            "attempts": payload.get("attempts"),
+            "last_error_kind": payload.get("last_error_kind"),
+            "risk_level": payload.get("risk_level"),
+            "requires_approval": payload.get("requires_approval"),
+        }
+
     def _trace_tool_start(self, run_id: Optional[str], tool_call: dict) -> None:
         """追踪工具调用"""
         if not run_id:
@@ -211,25 +242,18 @@ class ChatService:
         run_id: Optional[str],
         status: str = "requested",
     ) -> None:
-        profile = tool_approval_profile(tool_call.get("name", ""), tool_call.get("args", {}))
-        append_audit(
-            {
-                "timestamp": now_iso(),
-                "event": "tool_call_request",
-                "tool": tool_call.get("name"),
-                "args": tool_call.get("args", {}),
-                "tool_call_id": tool_call.get("id"),
-                "user_id": str(user_id),
-                "user_role": user_role,
-                "session_id": session.id,
-                "thread_id": session.thread_id,
-                "mode": session.mode,
-                "trace_run_id": run_id,
-                "status": status,
-                "tool_permission": profile.get("permission"),
-                "risk_level": profile.get("risk_level"),
-                "requires_approval": profile.get("requires_approval"),
-            }
+        audit_tool_event(
+            "tool_call_request",
+            tool=str(tool_call.get("name") or "unknown"),
+            user_id=str(user_id),
+            user_role=user_role,
+            mode=session.mode,
+            thread_id=session.thread_id,
+            trace_run_id=run_id,
+            tool_call_id=tool_call.get("id"),
+            args=tool_call.get("args", {}),
+            status=status,
+            extra={"session_id": session.id, **self._dispatch_request_extra(tool_call)},
         )
 
     def _audit_tool_result(
@@ -241,21 +265,18 @@ class ChatService:
         session: ChatSession,
         run_id: Optional[str],
     ) -> None:
-        append_audit(
-            {
-                "timestamp": now_iso(),
-                "event": "tool_call_result",
-                "tool": tool_message.name,
-                "tool_call_id": tool_message.tool_call_id,
-                "user_id": str(user_id),
-                "user_role": user_role,
-                "session_id": session.id,
-                "thread_id": session.thread_id,
-                "mode": session.mode,
-                "trace_run_id": run_id,
-                "status": "success",
-                "result": str(tool_message.content),
-            }
+        audit_tool_event(
+            "tool_call_result",
+            tool=str(tool_message.name or "unknown"),
+            user_id=str(user_id),
+            user_role=user_role,
+            mode=session.mode,
+            thread_id=session.thread_id,
+            trace_run_id=run_id,
+            tool_call_id=tool_message.tool_call_id,
+            result=str(tool_message.content),
+            status="success",
+            extra={"session_id": session.id, **self._dispatch_result_extra(tool_message)},
         )
 
     def _trace_tool_end(self, run_id: Optional[str], tool_message: ToolMessage) -> None:

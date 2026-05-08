@@ -1,8 +1,5 @@
 from typing import Dict
 
-from app.storage import append_audit
-from app.utils.format_utils import now_iso
-
 TOOL_REGISTRY: Dict[str, dict] = {}
 
 
@@ -33,48 +30,13 @@ def before_tool_execution(
     user_role: str,
     mode: str = "manual",
 ):
-    """Pre-execution hook: authz + audit request."""
-    tool_meta = TOOL_REGISTRY.get(tool_name, {})
-    try:
-        security_check(tool_name, user_role, mode=mode)
-    except PermissionError as exc:
-        append_audit({
-            "timestamp": now_iso(),
-            "event": "tool_call_denied",
-            "tool": tool_name,
-            "args": args,
-            "user_id": user_id,
-            "user_role": user_role,
-            "mode": mode,
-            "tool_permission": tool_meta.get("permission"),
-            "status": "denied",
-            "error": str(exc),
-        })
-        raise
-    append_audit({
-        "timestamp": now_iso(),
-        "event": "tool_call_request",
-        "tool": tool_name,
-        "tool_permission": tool_meta.get("permission"),
-        "args": args,
-        "user_id": user_id,
-        "user_role": user_role,
-        "mode": mode,
-    })
+    """Pre-execution hook: authz only."""
+    security_check(tool_name, user_role, mode=mode)
 
 
 def after_tool_execution(tool_name: str, result: str, user_id: str, user_role: str):
-    """Post-execution hook: audit result."""
-    tool_meta = TOOL_REGISTRY.get(tool_name, {})
-    append_audit({
-        "timestamp": now_iso(),
-        "event": "tool_call_result",
-        "tool": tool_name,
-        "tool_permission": tool_meta.get("permission"),
-        "result": result,
-        "user_id": user_id,
-        "user_role": user_role,
-    })
+    """Post-execution hook kept for compatibility; no audit writes."""
+    _ = (tool_name, result, user_id, user_role)
 
 
 def register_tool(

@@ -1,14 +1,9 @@
 import json
-import time
 from typing import Any, Dict, Optional
 
-from app.agent.approval_policy import tool_approval_profile
 from app.agent.dispatcher.discovery import cli_list_payload, cli_tool_doc_payload
 from app.agent.dispatcher.executor import dispatch_action
 from app.agent.tools.security import register_tool
-from app.core.logger import logger
-from app.storage import append_audit
-from app.utils.format_utils import now_iso
 from langchain_core.runnables import RunnableConfig
 
 # _DISCOVERY_TTL_SECONDS = 600
@@ -140,63 +135,11 @@ def cli_tool_doc(tool: str, config: Optional[RunnableConfig] = None) -> str:
 )
 def dispatch_tool(action: str, params: Dict[str, Any], config: Optional[RunnableConfig] = None) -> str:
     """Execute one action through dispatcher policy gateway."""
-    # 获取上下文
-    user_id, user_role, mode, thread_id, trace_run_id = _context_from_config(config)
-
-    # session = _get_session(user_role=user_role, mode=mode, thread_id=thread_id)
-
-    # 获取工具调用风险
-    profile = tool_approval_profile("dispatch_tool", {"action": action, "params": params})
-
-    # 创建 tool call request 审计
-    append_audit({
-        "timestamp": now_iso(),
-        "event": "tool_call_request",
-        "tool": "dispatch_tool",
-        "args": {"action": action, "params": params},
-        "user_id": user_id,
-        "user_role": user_role,
-        "mode": mode,
-        "thread_id": thread_id,
-        "trace_run_id": trace_run_id,
-        "tool_permission": profile.get("permission"),
-        "risk_level": profile.get("risk_level"),
-        "requires_approval": profile.get("requires_approval"),
-    })
+    # 保留上下文提取，便于未来扩展，不在执行层写审计日志。
+    _user_id, user_role, mode, _thread_id, _trace_run_id = _context_from_config(config)
 
     # 执行 action
     payload = dispatch_action(action=action, params=params, user_role=user_role, mode=mode)
-
-    # 记录调用后审计
-    status = str(payload.get("status") or "unknown")
-    event_type = "tool_call_result"
-    if status == "denied":
-        event_type = "tool_call_denied"
-    append_audit({
-        "timestamp": now_iso(),
-        "event": event_type,
-        "tool": "dispatch_tool",
-        "args": {"action": action, "params": params},
-        "user_id": user_id,
-        "user_role": user_role,
-        "mode": mode,
-        "thread_id": thread_id,
-        "trace_run_id": trace_run_id,
-        "tool_permission": profile.get("permission"),
-        "risk_level": profile.get("risk_level"),
-        "requires_approval": profile.get("requires_approval"),
-        "status": "denied" if status == "denied" else ("failed" if status == "failed" else "success"),
-        "error": payload.get("error") or payload.get("reason"),
-        "result": {
-            "action": payload.get("action"),
-            "status": status,
-            "risk_level": payload.get("risk_level"),
-            "requires_approval": payload.get("requires_approval"),
-            "execution_backend": payload.get("execution_backend"),
-            "attempts": payload.get("attempts"),
-            "last_error_kind": payload.get("last_error_kind"),
-        },
-    })
 
     # session["total_dispatch"] = int(session.get("total_dispatch", 0)) + 1
     # doc_hit = action in session.get("doc_actions_viewed", set())
