@@ -1,6 +1,4 @@
 import json
-import time
-import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -9,7 +7,7 @@ from langchain_core.runnables import RunnableConfig
 
 from app.agent.prompts.report_system_prompt import REPORTER_SYSTEM_PROMPT
 from app.agent.state import AgentState
-from app.agent.trace_runtime import extract_usage_from_llm_response, trace_runtime
+from app.agent.trace import LLMTrace
 from app.core.logger import logger
 from app.utils.llm_utils import get_llm
 
@@ -87,53 +85,29 @@ def reporter_node(state: AgentState, config: Optional[RunnableConfig] = None):
     chain = prompt | llm
 
     run_id = _run_id_from_config(config)
-    call_id = uuid.uuid4().hex
-    started = time.time()
-
     current_input = ""
     if messages:
         last_msg = messages[-1]
         content = getattr(last_msg, "content", "")
         current_input = content if isinstance(content, str) else str(content)
 
-    if run_id:
-        trace_runtime.append_event(
-            run_id=run_id,
-            event_type="llm_call_start",
-            call_id=call_id,
-            status="running",
-            meta={"input": current_input},
-        )
-
-    response = chain.invoke(
-        {
-            "alert_info": alert_context_str,
-            "evidence_json": evidence_str,
-            "hypotheses_json": hypotheses_str,
-            "timeline_candidates_json": timeline_candidates_str,
-            "root_cause_candidates_json": root_cause_candidates_str,
-            "approval_requests_json": approval_requests_str,
-            "actions_executed_json": actions_executed_str,
-        }
+    response = LLMTrace.invoke(
+        run_id=run_id,
+        node_name="reporter",
+        model=getattr(llm, "model_name", "unknown"),
+        input_preview=current_input,
+        invoke_fn=lambda: chain.invoke(
+            {
+                "alert_info": alert_context_str,
+                "evidence_json": evidence_str,
+                "hypotheses_json": hypotheses_str,
+                "timeline_candidates_json": timeline_candidates_str,
+                "root_cause_candidates_json": root_cause_candidates_str,
+                "approval_requests_json": approval_requests_str,
+                "actions_executed_json": actions_executed_str,
+            }
+        ),
     )
-
-    if run_id:
-        output = response.content if isinstance(response.content, str) else str(response.content)
-        usage = extract_usage_from_llm_response(response)
-        duration_ms = max(0, int((time.time() - started) * 1000))
-        meta = {"output": output}
-        if usage:
-            meta["usage"] = usage
-            trace_runtime.add_usage(run_id, usage)
-
-        trace_runtime.append_event(
-            run_id=run_id,
-            event_type="llm_call_end",
-            call_id=call_id,
-            status="success",
-            duration_ms=duration_ms,
-            meta=meta,
-        )
 
     report_text = response.content if isinstance(response.content, str) else str(response.content)
     report_json_text = _extract_json_object_text(report_text)

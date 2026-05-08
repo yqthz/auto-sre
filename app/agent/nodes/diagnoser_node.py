@@ -1,7 +1,5 @@
 import hashlib
 import json
-import time
-import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -11,8 +9,8 @@ from langchain_core.runnables import RunnableConfig
 
 from app.agent.prompts.diagnoser_system_prompt import DIAGNOSER_SYSTEM_PROMPT
 from app.agent.state import AgentState
+from app.agent.trace import LLMTrace
 from app.agent.tools.tool_manager import get_agent_tools
-from app.agent.trace_runtime import extract_usage_from_llm_response, trace_runtime
 from app.core.logger import logger
 from app.utils.llm_utils import get_llm
 
@@ -490,42 +488,19 @@ def diagnoser_node(state: AgentState, config: Optional[RunnableConfig] = None):
     chain = prompt | llm_with_tools
 
     run_id = _run_id_from_config(config)
-    call_id = uuid.uuid4().hex
-    started = time.time()
-
     current_input = ""
     if messages:
         last_msg = messages[-1]
         content = getattr(last_msg, "content", "")
         current_input = content if isinstance(content, str) else str(content)
 
-    if run_id:
-        trace_runtime.append_event(
-            run_id=run_id,
-            event_type="llm_call_start",
-            call_id=call_id,
-            status="running",
-            meta={"input": current_input},
-        )
-
-    response = chain.invoke({"history": messages, "alert_info": alert_context_str})
-
-    if run_id:
-        output = response.content if isinstance(response.content, str) else str(response.content)
-        usage = extract_usage_from_llm_response(response)
-        duration_ms = max(0, int((time.time() - started) * 1000))
-        meta = {"output": output}
-        if usage:
-            meta["usage"] = usage
-            trace_runtime.add_usage(run_id, usage)
-        trace_runtime.append_event(
-            run_id=run_id,
-            event_type="llm_call_end",
-            call_id=call_id,
-            status="success",
-            duration_ms=duration_ms,
-            meta=meta,
-        )
+    response = LLMTrace.invoke(
+        run_id=run_id,
+        node_name="diagnoser",
+        model=getattr(llm, "model_name", "unknown"),
+        input_preview=current_input,
+        invoke_fn=lambda: chain.invoke({"history": messages, "alert_info": alert_context_str}),
+    )
 
     hypotheses = _collect_hypotheses([response], hypotheses)
 

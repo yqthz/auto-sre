@@ -3,8 +3,6 @@ AI Chat 消息服务层
 处理消息发送、Agent 执行、流式响应等核心逻辑
 """
 import json
-import time
-import uuid
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Dict, Any, Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +12,7 @@ from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from app.model.chat import ChatSession, ChatMessage
 from app.agent.graph import create_graph
 from app.agent.approval_policy import tool_approval_profile
+from app.agent.trace import ToolTrace
 from app.agent.tools.audit import audit_tool_event
 from app.agent.trace_runtime import trace_runtime
 from app.core.logger import logger
@@ -218,19 +217,7 @@ class ChatService:
 
     def _trace_tool_start(self, run_id: Optional[str], tool_call: dict) -> None:
         """追踪工具调用"""
-        if not run_id:
-            return
-        call_id = str(tool_call.get("id") or uuid.uuid4().hex)
-        trace_runtime.append_event(
-            run_id=run_id,
-            event_type="tool_call_start",
-            call_id=call_id,
-            status="running",
-            meta={
-                "tool_name": str(tool_call.get("name") or "unknown"),
-                "input": tool_call.get("args", {}),
-            },
-        )
+        ToolTrace.on_tool_start(run_id=run_id, tool_call=tool_call)
 
     def _audit_tool_request(
         self,
@@ -281,18 +268,12 @@ class ChatService:
 
     def _trace_tool_end(self, run_id: Optional[str], tool_message: ToolMessage) -> None:
         """最终工具调用结果"""
-        if not run_id:
-            return
-        call_id = str(tool_message.tool_call_id or uuid.uuid4().hex)
-        trace_runtime.append_event(
+        ToolTrace.on_tool_end(
             run_id=run_id,
-            event_type="tool_call_end",
-            call_id=call_id,
+            call_id=tool_message.tool_call_id,
+            tool_name=str(tool_message.name or "unknown"),
+            output_preview=self._safe_text(tool_message.content),
             status="success",
-            meta={
-                "tool_name": str(tool_message.name or "unknown"),
-                "output": self._safe_text(tool_message.content),
-            },
         )
 
     def record_approval_outcome(

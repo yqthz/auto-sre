@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.graph import create_graph
 from app.agent.approval_policy import tool_approval_profile
+from app.agent.trace import ToolTrace
 from app.agent.trace_runtime import trace_runtime
 from app.agent.tools.audit import audit_tool_event
 from app.agent.tools.security import before_tool_execution
@@ -286,6 +287,13 @@ def run_agent(
                     msg = event["message"][-1]
 
                     if isinstance(msg, ToolMessage):
+                        ToolTrace.on_tool_end(
+                            run_id=run_id,
+                            call_id=msg.tool_call_id,
+                            tool_name=str(msg.name or "unknown"),
+                            output_preview=str(msg.content),
+                            status="success",
+                        )
                         # 记录工具调用执行结果
                         dispatch_extra: Dict[str, Any] = {}
                         if str(msg.name or "") == "dispatch_tool":
@@ -343,6 +351,7 @@ def run_agent(
                                 user_role=AUTO_BOT_ROLE,
                                 mode="auto",
                             )
+                            ToolTrace.on_tool_start(run_id=run_id, tool_call=tc)
                             audit_tool_event(
                                 "tool_call_request",
                                 tool=str(tc.get("name") or "unknown"),
@@ -383,6 +392,13 @@ def run_agent(
                                 tool_call_id=tc["id"],
                                 content=f"SecurityError: {str(e)}",
                                 name=tc["name"],
+                            )
+                            ToolTrace.on_tool_end(
+                                run_id=run_id,
+                                call_id=tc.get("id"),
+                                tool_name=str(tc.get("name") or "unknown"),
+                                output_preview=f"SecurityError: {str(e)}",
+                                status="denied",
                             )
                             graph.update_state(config, {"messages": [deny_msg]}, as_node="tools")
                             all_checks_passed = False
@@ -685,4 +701,3 @@ async def receive_alert(
             )
 
     return {"status": "accepted", "msg": "Investigation started in background"}
-
