@@ -22,6 +22,7 @@ def has_cli_handler(action: str) -> bool:
 
 
 def run_cli_action(action: str, params: Dict[str, Any]) -> Any:
+    """执行函数调用"""
     handler = _load_handler(action)
     result = handler(**params)
     if inspect.isawaitable(result):

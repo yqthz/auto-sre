@@ -20,6 +20,7 @@ def _decode_process_output(data: bytes | str | None) -> str:
 
 
 def _loads_first_json_object(stdout: str) -> Dict[str, Any]:
+    """加载标准输出的内容"""
     cleaned = _ANSI_ESCAPE_RE.sub("", stdout).lstrip("\ufeff").strip()
     payload, _idx = json.JSONDecoder().raw_decode(cleaned)
     if not isinstance(payload, dict):
@@ -36,6 +37,8 @@ def run_via_cli(action: str, params: Dict[str, Any], timeout_seconds: int = DEFA
             "kind": "unsupported",
         }
 
+    # 执行 action
+    # python -m app.agent.dispatcher.cli_entry run --action ... --params ...
     cmd = [
         sys.executable,
         "-m",

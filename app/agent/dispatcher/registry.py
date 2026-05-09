@@ -45,11 +45,11 @@ ACTION_SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
 }
 
-DEFAULT_ACTION_TIMEOUT_SECONDS = 10
-DEFAULT_ACTION_MAX_RETRIES = 1
-DEFAULT_ACTION_RETRY_BACKOFF_SECONDS = 0.5
+DEFAULT_ACTION_TIMEOUT_SECONDS = 10         # 超时时间
+DEFAULT_ACTION_MAX_RETRIES = 1              # 最大重试次数
+DEFAULT_ACTION_RETRY_BACKOFF_SECONDS = 0.5          # 退避策略
 DEFAULT_ACTION_RETRY_BACKOFF_MULTIPLIER = 2.0
-DEFAULT_ACTION_RETRY_ON_KINDS = ["timeout", "spawn_error", "cli_failed"]
+DEFAULT_ACTION_RETRY_ON_KINDS = ["timeout", "spawn_error", "cli_failed"]     # 重试类型
 MAX_ACTION_TIMEOUT_SECONDS = 120
 
 ACTION_RUNTIME_OVERRIDES: Dict[str, Dict[str, Any]] = {}
@@ -62,7 +62,7 @@ class ActionMeta:
     tool_group: str
     fn: Callable[..., Any]
     description: str
-    roles: List[str]
+    roles: List[str]      
     permission: str
     requires_approval: bool
     risk_level: str
@@ -77,6 +77,7 @@ class ActionMeta:
 
 
 def _permission_to_risk(permission: str) -> str:
+    """permission 转为 risk"""
     if permission == "danger":
         return "high"
     if permission in {"limited", "moderate"}:
@@ -85,6 +86,7 @@ def _permission_to_risk(permission: str) -> str:
 
 
 def _annotation_to_json_type(annotation: Any) -> str:
+    """类型注解 转成 json schema 类型"""
     if annotation is inspect._empty:
         return "string"
 
@@ -107,10 +109,11 @@ def _annotation_to_json_type(annotation: Any) -> str:
     if annotation is dict:
         return "object"
 
-    return "string"
+    return "string" 
 
 
 def _json_type_to_legacy(json_type: str) -> str:
+    """类型映射"""
     mapping = {
         "integer": "int",
         "number": "float",
@@ -123,11 +126,13 @@ def _json_type_to_legacy(json_type: str) -> str:
 
 
 def _infer_param_schema(fn: Callable[..., Any]) -> tuple[List[str], Dict[str, str], Dict[str, Any]]:
+    # 读取函数参数列表
     sig = inspect.signature(fn)
     required: List[str] = []
     param_types: Dict[str, str] = {}
     properties: Dict[str, Dict[str, Any]] = {}
 
+    # 遍历参数，保留可按关键字传参的类型
     for name, param in sig.parameters.items():
         if param.kind not in {
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
@@ -138,10 +143,13 @@ def _infer_param_schema(fn: Callable[..., Any]) -> tuple[List[str], Dict[str, st
         if name == "config":
             continue
 
+        # 参数没有默认值，标记为 required
         if param.default is inspect._empty:
             required.append(name)
 
+        # 参数注解转成 JSON 类型
         json_type = _annotation_to_json_type(param.annotation)
+
         param_types[name] = _json_type_to_legacy(json_type)
         properties[name] = {"type": json_type}
 
@@ -156,6 +164,7 @@ def _infer_param_schema(fn: Callable[..., Any]) -> tuple[List[str], Dict[str, st
 
 
 def _tool_group_from_meta(meta: dict) -> str:
+    """获取工具 tags"""
     tags = meta.get("tags") or []
     if tags:
         return str(tags[0])
@@ -255,6 +264,7 @@ def _normalize_runtime_config(raw: Dict[str, Any], *, requires_approval: bool, r
 
 
 def list_actions() -> List[ActionMeta]:
+    """返回所有的工具"""
     ensure_tool_modules_loaded()
     actions: List[ActionMeta] = []
 
@@ -266,11 +276,14 @@ def list_actions() -> List[ActionMeta]:
         fn = meta["fn"]
         group = _tool_group_from_meta(meta)
         action = f"{group}.{tool_name}"
+        # 推导参数 schema
         required_params, param_types, base_schema = _infer_param_schema(fn)
         override = ACTION_SCHEMA_OVERRIDES.get(action) or {}
         param_schema = _normalize_schema(_deep_merge_schema(base_schema, override))
+        # 获取 risk_level 和 审批请求
         risk_level = _permission_to_risk(str(meta.get("permission") or "info"))
         requires_approval = bool(meta.get("requires_approval", False))
+        # 生成运行超时/重试配置
         runtime_config = _normalize_runtime_config(
             ACTION_RUNTIME_OVERRIDES.get(action) or {},
             requires_approval=requires_approval,

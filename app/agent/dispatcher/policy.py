@@ -25,6 +25,7 @@ def _check_mode(meta: ActionMeta, mode: str) -> Optional[str]:
 
 
 def _matches_type(value: Any, expected: str) -> bool:
+    """类型检查"""
     if expected == "string":
         return isinstance(value, str)
     if expected == "boolean":
@@ -41,14 +42,18 @@ def _matches_type(value: Any, expected: str) -> bool:
 
 
 def _validate_param_value(name: str, value: Any, rule: Dict[str, Any]) -> Optional[str]:
+    """参数校验"""
+    # 类型检查
     expected_type = str(rule.get("type") or "")
     if expected_type and not _matches_type(value, expected_type):
         return f"param `{name}` type mismatch: expected {expected_type}, got {type(value).__name__}"
 
+    # enum 检查
     enum_values = rule.get("enum")
     if isinstance(enum_values, list) and enum_values and value not in enum_values:
         return f"param `{name}` must be one of {enum_values}"
 
+    # 参数范围检查
     if expected_type in {"integer", "number"}:
         minimum = rule.get("minimum")
         maximum = rule.get("maximum")
@@ -57,6 +62,7 @@ def _validate_param_value(name: str, value: Any, rule: Dict[str, Any]) -> Option
         if isinstance(maximum, (int, float)) and value > maximum:
             return f"param `{name}` must be <= {maximum}"
 
+    # 字符串检查
     if expected_type == "string":
         min_len = rule.get("minLength")
         max_len = rule.get("maxLength")
@@ -108,18 +114,23 @@ def _check_schema(meta: ActionMeta, params: Dict[str, Any]) -> Optional[str]:
 
 
 def evaluate_action(action: str, params: Dict[str, Any], user_role: str, mode: str) -> PolicyDecision:
+    """评估执行的工具"""
+    # 获取工具元数据
     meta = get_action_meta(action)
     if not meta:
         return PolicyDecision(status="denied", reason=f"unknown action `{action}`", action_meta=None)
 
+    # 检查参数
     schema_error = _check_schema(meta, params)
     if schema_error:
         return PolicyDecision(status="denied", reason=schema_error, action_meta=meta)
 
+    # 校验角色
     role_error = _check_role(meta, user_role)
     if role_error:
         return PolicyDecision(status="denied", reason=role_error, action_meta=meta)
 
+    # 检查运行模式
     mode_error = _check_mode(meta, mode)
     if mode_error:
         return PolicyDecision(status="denied", reason=mode_error, action_meta=meta)

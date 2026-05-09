@@ -34,6 +34,8 @@ def _should_retry(error_kind: str, attempt: int, max_retries: int, retry_on_kind
 
 
 def dispatch_action(action: str, params: Dict[str, Any], user_role: str, mode: str) -> Dict[str, Any]:
+    """执行工具调用"""
+    # 评估工具调用
     decision = evaluate_action(action=action, params=params, user_role=user_role, mode=mode)
 
     if decision.action_meta is None:
@@ -66,6 +68,7 @@ def dispatch_action(action: str, params: Dict[str, Any], user_role: str, mode: s
     last_cli_result = None
 
     while True:
+        # 工具调用
         cli_result = run_via_cli(action=action, params=params, timeout_seconds=meta.timeout_seconds)
         last_cli_result = cli_result
 
@@ -84,14 +87,19 @@ def dispatch_action(action: str, params: Dict[str, Any], user_role: str, mode: s
                 "retry_history": retry_history,
             }
 
+        # 工具调用失败，进行重试
         attempt += 1
+
+        # 错误类型
         err_kind = str(cli_result.get("kind") or "unknown")
+        # 错误信息
         err_text = str(cli_result.get("error") or "")
+
         retry_history.append(
             {
                 "attempt": attempt,
                 "error_kind": err_kind,
-                "error": err_text[:260],
+                "error": err_text,
                 "timeout_seconds": meta.timeout_seconds,
             }
         )
@@ -114,7 +122,7 @@ def dispatch_action(action: str, params: Dict[str, Any], user_role: str, mode: s
 
     fallback_reason = "cli_fallback:{kind}: {error}".format(
         kind=str((last_cli_result or {}).get("kind") or "unknown"),
-        error=str((last_cli_result or {}).get("error") or "")[:260],
+        error=str((last_cli_result or {}).get("error") or ""),
     )
 
     if not _legacy_fallback_enabled_for_action(action):
