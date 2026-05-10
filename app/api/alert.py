@@ -14,6 +14,7 @@ from app.schema.alert_event import (
     AlertEventListResponse,
 )
 from app.model.user import User
+from app.notification.send_report import _render_report_markdown
 from app.service.audit_service import write_audit_log
 
 router = APIRouter()
@@ -58,6 +59,13 @@ def _normalize_json_object(value: Any) -> Optional[dict[str, Any]]:
     return None
 
 
+def _render_alert_report_markdown(alert_name: str, analysis_report: Optional[dict[str, Any]]) -> Optional[str]:
+    title = f"Incident Diagnostic Report: {alert_name}"
+    if analysis_report is None:
+        return None
+    return _render_report_markdown(title, analysis_report)
+
+
 @router.get("/alerts/stats")
 async def get_alert_stats(
     request: Request,
@@ -99,10 +107,6 @@ async def get_alert_stats(
         )
     )
 
-    error_total_result = await db.execute(
-        select(func.sum(AlertEvent.log_error_warn_count)).where(*base_filters)
-    )
-
     severity_distribution_result = await db.execute(
         select(AlertEvent.severity, func.count(AlertEvent.id).label("count"))
         .where(*base_filters)
@@ -131,9 +135,6 @@ async def get_alert_stats(
     latency_values = [int(row[0]) for row in latency_values_result.all() if row and row[0] is not None]
     p95_latency_sec = _calc_p95(latency_values)
 
-    log_error_warn_total = int(error_total_result.scalar() or 0)
-    log_error_warn_avg_per_alert = round(log_error_warn_total / total_alerts, 2) if total_alerts > 0 else 0.0
-
     severity_distribution = [
         {"name": str(row[0] or "unknown"), "count": int(row[1] or 0)}
         for row in severity_distribution_result.all()
@@ -161,10 +162,6 @@ async def get_alert_stats(
         "latency": {
             "avg_sec": avg_latency_sec,
             "p95_sec": p95_latency_sec,
-        },
-        "error_signal": {
-            "total_error_warn": log_error_warn_total,
-            "avg_per_alert": log_error_warn_avg_per_alert,
         },
         "distribution": {
             "severity": severity_distribution,
@@ -284,5 +281,8 @@ async def get_alert_detail(
         session_id=event.session_id,
         metrics_snapshot=_normalize_json_object(event.metrics_snapshot),
         log_summary=_normalize_json_object(event.log_summary),
-        analysis_report=_normalize_json_object(event.analysis_report),
+        report_markdown=_render_alert_report_markdown(
+            event.alert_name,
+            _normalize_json_object(event.analysis_report),
+        ),
     )

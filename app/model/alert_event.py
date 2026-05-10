@@ -42,7 +42,6 @@ class AlertEvent(Base):
     analysis_duration_sec = Column(Integer, nullable=True)
 
     # 分析阶段日志中的 error/warn 聚合计数
-    log_error_warn_count = Column(Integer, nullable=False, default=0)
 
     # 记录创建和更新时刻
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

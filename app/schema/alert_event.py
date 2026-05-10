@@ -41,7 +41,7 @@ class AlertEventDetailResponse(BaseModel):
     session_id: Optional[int]
     metrics_snapshot: Optional[Dict[str, Any]]
     log_summary: Optional[Dict[str, Any]]
-    analysis_report: Optional[Dict[str, Any]]
+    report_markdown: Optional[str]
 
     class Config:
         from_attributes = True

@@ -56,11 +56,14 @@ def _runbook_name(item: Any) -> str:
     return str(item).strip()
 
 
-def _render_report_markdown(title: str, report_content: str) -> str:
-    try:
-        payload = json.loads(report_content)
-    except Exception:
-        return f"# {title}\n\n```json\n{report_content}\n```\n"
+def _render_report_markdown(title: str, report_content: Any) -> str:
+    if isinstance(report_content, (dict, list)):
+        payload = report_content
+    else:
+        try:
+            payload = json.loads(report_content)
+        except Exception:
+            return f"# {title}\n\n```json\n{report_content}\n```\n"
 
     if not isinstance(payload, dict):
         return f"# {title}\n\n```json\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n```\n"

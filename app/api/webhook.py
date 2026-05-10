@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -141,26 +141,6 @@ async def _create_auto_trace_session(
     return session
 
 
-def _extract_log_error_warn_count(log_summary: Any) -> int:
-    if not isinstance(log_summary, dict):
-        return 0
-
-    entries = log_summary.get("entries")
-    if not isinstance(entries, list):
-        return 0
-
-    total = 0
-    for item in entries:
-        if not isinstance(item, dict):
-            continue
-        count = item.get("count", 0)
-        try:
-            total += int(count)
-        except (TypeError, ValueError):
-            continue
-
-    return max(total, 0)
-
 
 async def save_analysis_results(thread_id: str, alert_event_id: int, analysis_status: str):
     """保存分析结果"""
@@ -216,9 +196,6 @@ async def save_analysis_results(thread_id: str, alert_event_id: int, analysis_st
             if analysis_duration_sec < 0:
                 analysis_duration_sec = 0
 
-        # 计算 log_error_warn_count
-        log_error_warn_count = _extract_log_error_warn_count(log_summary)
-
         # 更新 AlertEvent
         await db.execute(
             update(AlertEvent)
@@ -230,7 +207,6 @@ async def save_analysis_results(thread_id: str, alert_event_id: int, analysis_st
                 analysis_status=analysis_status,
                 analysis_completed_at=analysis_completed_at,
                 analysis_duration_sec=analysis_duration_sec,
-                log_error_warn_count=log_error_warn_count,
             )
         )
         await db.commit()
@@ -553,7 +529,6 @@ async def receive_alert(
                         analysis_started_at=None,
                         analysis_completed_at=None,
                         analysis_duration_sec=None,
-                        log_error_warn_count=0,
                         metrics_snapshot=None,
                         log_summary=None,
                         analysis_report=None,
@@ -701,3 +676,4 @@ async def receive_alert(
             )
 
     return {"status": "accepted", "msg": "Investigation started in background"}
+
