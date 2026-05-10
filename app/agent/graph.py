@@ -5,7 +5,6 @@ from langgraph.prebuilt import ToolNode
 
 from app.agent.nodes.diagnoser_node import diagnoser_node
 from app.agent.nodes.notification_node import notification_node
-from app.agent.nodes.reporter_node import reporter_node
 from app.agent.nodes.sre_agent import sre_node
 from app.agent.state import AgentState
 from app.agent.tools.loader import ensure_tool_modules_loaded
@@ -18,32 +17,31 @@ def _all_tools_list():
 
 
 def entry_router(state: AgentState):
-    """决定入口：是自动诊断还是人工对话"""
+    """Decide whether to start with auto diagnosis or manual chat."""
     if state.get("mode") == "auto":
         return "diagnoser"
     return "sre_agent"
 
 
 def diagnoser_router(state: AgentState):
-    """诊断者的逻辑分支：需要工具 vs 生成报告"""
+    """Route diagnoser output to tools or notification."""
     messages = state["messages"]
     last_message = messages[-1]
 
     if last_message.tool_calls:
         return "tools"
-    return "reporter"
+    return "notification"
 
 
 def post_tool_router(state: AgentState):
-    """工具执行完后，回哪里去？"""
-    # 根据 mode 原路返回
+    """Route after tool execution."""
     if state.get("mode") == "auto":
         return "diagnoser"
     return "sre_agent"
 
 
 def should_continue(state: AgentState):
-    last_message = state['messages'][-1]
+    last_message = state["messages"][-1]
     if last_message.tool_calls:
         return "tools"
     return END
@@ -54,7 +52,6 @@ def create_graph():
 
     builder.add_node("diagnoser", diagnoser_node)
     builder.add_node("sre_agent", sre_node)
-    builder.add_node("reporter", reporter_node)
     builder.add_node("notification", notification_node)
     builder.add_node("tools", ToolNode(_all_tools_list()))
 
@@ -62,8 +59,8 @@ def create_graph():
         entry_router,
         {
             "diagnoser": "diagnoser",
-            "sre_agent": "sre_agent"
-        }
+            "sre_agent": "sre_agent",
+        },
     )
 
     builder.add_conditional_edges(
@@ -71,8 +68,8 @@ def create_graph():
         diagnoser_router,
         {
             "tools": "tools",
-            "reporter": "reporter"
-        }
+            "notification": "notification",
+        },
     )
 
     builder.add_conditional_edges(
@@ -80,8 +77,8 @@ def create_graph():
         should_continue,
         {
             "tools": "tools",
-            END: END
-        }
+            END: END,
+        },
     )
 
     builder.add_conditional_edges(
@@ -89,11 +86,10 @@ def create_graph():
         post_tool_router,
         {
             "diagnoser": "diagnoser",
-            "sre_agent": "sre_agent"
-        }
+            "sre_agent": "sre_agent",
+        },
     )
 
-    builder.add_edge("reporter", "notification")
     builder.add_edge("notification", END)
 
     memory = MemorySaver()

@@ -34,6 +34,7 @@ EVIDENCE_ACTIONS = {
     "network.curl_http_endpoint",
     "profile.lookup_runtime_profile",
 }
+REPORT_SEVERITIES = {"critical", "high", "medium", "low"}
 LEGACY_EVIDENCE_TOOLS = {
     "query_prometheus_metrics": "prometheus.query_prometheus_metrics",
     "query_prometheus_range_metrics": "prometheus.query_prometheus_range_metrics",
@@ -452,6 +453,145 @@ def _collect_hypotheses(messages: List[Any], existing: List[Dict[str, Any]]) -> 
     return hypotheses
 
 
+def _normalize_text_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if not isinstance(value, list):
+        return []
+
+    result: List[str] = []
+    for item in value:
+        text = item if isinstance(item, str) else str(item)
+        text = text.strip()
+        if text:
+            result.append(text)
+    return result
+
+
+def _is_non_empty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _is_iso8601(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return True
+    except ValueError:
+        return False
+
+
+def _extract_evidence_list(item: Dict[str, Any]) -> List[str]:
+    evidence = item.get("evidence")
+    if evidence is None:
+        evidence = item.get("evidence_refs")
+    if evidence is None:
+        evidence = item.get("evidence_ref")
+
+    items = _normalize_text_list(evidence)
+    if not items:
+        raise ValueError("evidence must be a non-empty string or string array")
+    return items
+
+
+def _extract_json_object_text(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if len(lines) >= 3 and lines[-1].strip().startswith("```"):
+            body = "\n".join(lines[1:-1]).strip()
+            if body.lower().startswith("json"):
+                body = body[4:].lstrip()
+            raw = body
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return raw[start : end + 1]
+    return raw
+
+
+def _validate_report_payload(report_text: str) -> str:
+    parsed = json.loads(_extract_json_object_text(report_text))
+    if not isinstance(parsed, dict):
+        raise ValueError("report JSON must be an object")
+
+    summary = parsed.get("summary")
+    severity = parsed.get("severity")
+    impact_scope = parsed.get("impact_scope")
+    timeline = parsed.get("timeline")
+    root_causes = parsed.get("root_causes")
+    recommendations = parsed.get("recommendations")
+    runbook_refs = parsed.get("runbook_refs")
+    risk_notes = parsed.get("risk_notes")
+
+    if not _is_non_empty_string(summary):
+        raise ValueError("summary must be a non-empty string")
+    if severity not in REPORT_SEVERITIES:
+        raise ValueError("severity must be one of critical/high/medium/low")
+    if not _is_non_empty_string(impact_scope):
+        raise ValueError("impact_scope must be a non-empty string")
+
+    if not isinstance(timeline, list) or not timeline:
+        raise ValueError("timeline must be a non-empty array")
+    prev_time = None
+    for item in timeline:
+        if not isinstance(item, dict):
+            raise ValueError("each timeline item must be an object")
+        t = item.get("time")
+        src = item.get("source")
+        event = item.get("event")
+        evidence = _extract_evidence_list(item)
+        if not _is_non_empty_string(t):
+            raise ValueError("timeline.time must be a non-empty string")
+        if not _is_iso8601(t):
+            raise ValueError("timeline.time must be a valid ISO-8601 string")
+        if src not in {"metric", "log"}:
+            raise ValueError("timeline.source must be metric or log")
+        if not _is_non_empty_string(event):
+            raise ValueError("timeline.event must be a non-empty string")
+
+        current_time = datetime.fromisoformat(t.replace("Z", "+00:00"))
+        if prev_time and current_time < prev_time:
+            raise ValueError("timeline must be sorted by time ascending")
+        prev_time = current_time
+        if not evidence:
+            raise ValueError("timeline.evidence must be a non-empty array")
+
+    if not isinstance(root_causes, list) or not root_causes:
+        raise ValueError("root_causes must be a non-empty array")
+    for item in root_causes:
+        if not isinstance(item, dict):
+            raise ValueError("each root_causes item must be an object")
+        hypothesis = item.get("hypothesis")
+        confidence = item.get("confidence")
+        evidence = _extract_evidence_list(item)
+        if not _is_non_empty_string(hypothesis):
+            raise ValueError("root_causes.hypothesis must be a non-empty string")
+        if not isinstance(confidence, (int, float)) or not 0 <= float(confidence) <= 1:
+            raise ValueError("root_causes.confidence must be a number in [0, 1]")
+        if not evidence:
+            raise ValueError("root_causes.evidence must be a non-empty array")
+
+    if not isinstance(recommendations, list) or not recommendations:
+        raise ValueError("recommendations must be a non-empty string array")
+    if not all(_is_non_empty_string(x) for x in recommendations):
+        raise ValueError("recommendations must contain non-empty strings")
+
+    if not isinstance(runbook_refs, list):
+        raise ValueError("runbook_refs must be a string array")
+    if not all(_is_non_empty_string(x) for x in runbook_refs):
+        raise ValueError("runbook_refs must contain non-empty strings")
+
+    if not isinstance(risk_notes, str):
+        raise ValueError("risk_notes must be a string")
+
+    return json.dumps(parsed, ensure_ascii=False)
+
+
 def diagnoser_node(state: AgentState, config: Optional[RunnableConfig] = None):
     messages = state["messages"]
     alert_context = state.get("alert_context", {})
@@ -461,6 +601,8 @@ def diagnoser_node(state: AgentState, config: Optional[RunnableConfig] = None):
     existing_hypotheses = state.get("hypotheses", [])
     existing_timeline_candidates = state.get("timeline_candidates", [])
     existing_root_cause_candidates = state.get("root_cause_candidates", [])
+    approval_requests = state.get("approval_requests", [])
+    actions_executed = state.get("actions_executed", [])
 
     evidence, timeline_candidates, root_cause_candidates = _collect_evidence(
         messages,
@@ -504,10 +646,60 @@ def diagnoser_node(state: AgentState, config: Optional[RunnableConfig] = None):
 
     hypotheses = _collect_hypotheses([response], hypotheses)
 
+    if response.tool_calls:
+        return {
+            "messages": [response],
+            "evidence": evidence,
+            "hypotheses": hypotheses,
+            "timeline_candidates": timeline_candidates,
+            "root_cause_candidates": root_cause_candidates,
+            "approval_requests": approval_requests,
+            "actions_executed": actions_executed,
+        }
+
+    report_text = response.content if isinstance(response.content, str) else str(response.content)
+    try:
+        report_text = _validate_report_payload(report_text)
+        report_message = response if isinstance(response, AIMessage) else AIMessage(content=report_text)
+    except Exception as e:
+        logger.error(f"diagnoser_node produced invalid report JSON: {e}")
+        fallback = {
+            "summary": "insufficient information",
+            "severity": "medium",
+            "impact_scope": "unknown",
+            "timeline": [
+                {
+                    "time": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                    "source": "log",
+                    "event": "report generation failed validation",
+                    "evidence": ["diagnoser_report_validation"],
+                }
+            ],
+            "root_causes": [
+                {
+                    "hypothesis": "report generation failed validation",
+                    "confidence": 0.1,
+                    "evidence": ["raw report text"],
+                    "reasoning": "The generated report did not satisfy schema validation.",
+                }
+            ],
+            "recommendations": [
+                "Inspect diagnoser output, tighten the diagnoser prompt, and rerun diagnosis within 10 minutes.",
+            ],
+            "runbook_refs": [],
+            "risk_notes": f"low confidence due to invalid report schema: {e}",
+            "raw_text": report_text,
+        }
+        report_text = json.dumps(fallback, ensure_ascii=False)
+        report_message = AIMessage(content=report_text)
+
     return {
-        "messages": [response],
+        "messages": [report_message],
+        "report": report_text,
         "evidence": evidence,
         "hypotheses": hypotheses,
         "timeline_candidates": timeline_candidates,
         "root_cause_candidates": root_cause_candidates,
+        "approval_requests": approval_requests,
+        "actions_executed": actions_executed,
     }

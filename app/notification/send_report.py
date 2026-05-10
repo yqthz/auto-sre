@@ -1,8 +1,59 @@
-﻿import json
+import json
+from typing import Any, Dict, List
 
 from app.notification.email_notification import send_email
 from app.storage import append_audit
 from app.utils.format_utils import now_iso
+
+
+def _as_text_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if not isinstance(value, list):
+        return []
+
+    result: List[str] = []
+    for item in value:
+        text = item if isinstance(item, str) else str(item)
+        text = text.strip()
+        if text:
+            result.append(text)
+    return result
+
+
+def _evidence_items(item: Dict[str, Any]) -> List[str]:
+    evidence = item.get("evidence")
+    if evidence is None:
+        evidence = item.get("evidence_refs")
+    if evidence is None:
+        evidence = item.get("evidence_ref")
+    return _as_text_list(evidence)
+
+
+def _append_evidence(lines: List[str], evidence: List[str], indent: int = 3) -> None:
+    pad = " " * indent
+    if not evidence:
+        lines.append(f"{pad}- N/A")
+        return
+
+    for snippet in evidence:
+        lines.append(f"{pad}-")
+        lines.append(f"{pad}  ```text")
+        for line in snippet.splitlines() or [""]:
+            lines.append(f"{pad}  {line}")
+        lines.append(f"{pad}  ```")
+
+
+def _runbook_name(item: Any) -> str:
+    if isinstance(item, str):
+        return item.strip()
+    if isinstance(item, dict):
+        for key in ("document_name", "doc_name", "title", "name", "filename"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return str(item).strip()
 
 
 def _render_report_markdown(title: str, report_content: str) -> str:
@@ -46,11 +97,11 @@ def _render_report_markdown(title: str, report_content: str) -> str:
             t = str(item.get("time") or "unknown-time")
             src = str(item.get("source") or "unknown-source")
             event = str(item.get("event") or "unknown-event")
-            evidence_ref = str(item.get("evidence_ref") or "unknown-evidence")
             lines.append(f"{idx}. Time: `{t}`")
             lines.append(f"   Source: `{src}`")
             lines.append(f"   Event: {event}")
-            lines.append(f"   Evidence: {evidence_ref}")
+            lines.append("   Evidence:")
+            _append_evidence(lines, _evidence_items(item))
             lines.append("")
             idx += 1
     else:
@@ -64,16 +115,13 @@ def _render_report_markdown(title: str, report_content: str) -> str:
                 continue
             hypothesis = str(item.get("hypothesis") or "unknown")
             confidence = item.get("confidence")
-            evidence_refs = item.get("evidence_refs") if isinstance(item.get("evidence_refs"), list) else []
-            refs = [str(x) for x in evidence_refs if str(x).strip()]
+            reasoning = str(item.get("reasoning") or "").strip()
             lines.append(f"{idx}. Hypothesis: {hypothesis}")
             lines.append(f"   Confidence: {confidence}")
+            if reasoning:
+                lines.append(f"   Reasoning: {reasoning}")
             lines.append("   Evidence:")
-            if refs:
-                for ref in refs:
-                    lines.append(f"   - {ref}")
-            else:
-                lines.append("   - N/A")
+            _append_evidence(lines, _evidence_items(item))
             lines.append("")
             idx += 1
     else:
@@ -87,9 +135,11 @@ def _render_report_markdown(title: str, report_content: str) -> str:
         lines.append("- N/A")
 
     lines.extend(["", "## Runbook Refs"])
-    if runbook_refs:
-        for item in runbook_refs:
-            lines.append(f"- {str(item)}")
+    names = [_runbook_name(item) for item in runbook_refs]
+    names = [name for name in names if name]
+    if names:
+        for name in names:
+            lines.append(f"- {name}")
     else:
         lines.append("- N/A")
 

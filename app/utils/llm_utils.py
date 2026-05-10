@@ -1,3 +1,6 @@
+from typing import Any
+
+from langchain_core.messages import AIMessage
 from langchain_deepseek import ChatDeepSeek
 from langchain_openai import OpenAIEmbeddings
 
@@ -5,14 +8,49 @@ from app.core.config import settings
 from app.core.logger import logger
 
 
-
 _global_embeddings = None
 _global_llm = None
+
+
+def _extract_reasoning_content(message: Any) -> str | None:
+    additional_kwargs = getattr(message, "additional_kwargs", {}) or {}
+
+    reasoning_content = additional_kwargs.get("reasoning_content")
+    if isinstance(reasoning_content, str) and reasoning_content.strip():
+        return reasoning_content
+
+    reasoning = additional_kwargs.get("reasoning")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return reasoning
+
+    return None
+
+
+def _preserve_reasoning_content_in_payload(messages: list[Any], payload: dict[str, Any]) -> dict[str, Any]:
+    for source_message, payload_message in zip(messages, payload.get("messages", [])):
+        if isinstance(source_message, AIMessage) and payload_message.get("role") == "assistant":
+            reasoning_content = _extract_reasoning_content(source_message)
+            if reasoning_content and "reasoning_content" not in payload_message:
+                payload_message["reasoning_content"] = reasoning_content
+    return payload
+
+
+class DeepSeekChatModel(ChatDeepSeek):
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):  # type: ignore[override]
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+
+        try:
+            messages = input_.to_messages()
+        except AttributeError:
+            messages = list(input_)
+
+        return _preserve_reasoning_content_in_payload(list(messages), payload)
+
 
 def get_embeddings():
     global _global_embeddings
     if _global_embeddings is None:
-        logger.info('Initializing embedding API client...')
+        logger.info("Initializing embedding API client...")
 
         api_key = settings.EMBEDDING_API_KEY or settings.LLM_API_KEY
         if not api_key:
@@ -36,6 +74,6 @@ def get_embeddings():
 def get_llm():
     global _global_llm
     if _global_llm is None:
-        logger.info('Initializing LLM client...')
-        _global_llm = ChatDeepSeek(model=settings.LLM_MODEL, api_key=settings.LLM_API_KEY, streaming=True)
+        logger.info("Initializing LLM client...")
+        _global_llm = DeepSeekChatModel(model=settings.LLM_MODEL, api_key=settings.LLM_API_KEY, streaming=True)
     return _global_llm
