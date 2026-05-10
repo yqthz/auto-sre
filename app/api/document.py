@@ -15,6 +15,7 @@ from app.model.knowledge_base import KnowledgeBase, Document, DocumentChunk
 from app.schema.knowledge_base import (
     DocumentResponse,
     DocumentListResponse,
+    DocumentPreviewResponse,
     DocumentChunkResponse,
     DocumentChunkListResponse
 )
@@ -238,6 +239,27 @@ async def list_documents(
         documents=[DocumentResponse.model_validate(doc) for doc in documents],
         total=total
     )
+
+
+@router.get("/documents/{doc_id}/preview", response_model=DocumentPreviewResponse)
+async def get_document_preview(
+    doc_id: int,
+    current_user: User = Depends(deps.get_current_active_user),
+    db: AsyncSession = Depends(deps.get_db)
+):
+    """Get plain text preview for a document."""
+    doc_query = select(Document).where(Document.id == doc_id)
+    doc_result = await db.execute(doc_query)
+    document = doc_result.scalars().first()
+
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if document.status != "completed":
+        raise HTTPException(status_code=409, detail="Document is not ready for preview")
+    if not document.content_text or not document.content_text.strip():
+        raise HTTPException(status_code=404, detail="Document content not available")
+
+    return DocumentPreviewResponse(preview_text=document.content_text)
 
 
 @router.get("/knowledge-bases/{kb_id}/documents/{doc_id}", response_model=DocumentResponse)

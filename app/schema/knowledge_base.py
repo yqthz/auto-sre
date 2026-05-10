@@ -1,27 +1,23 @@
 """
-RAG 知识库相关 Schema
+RAG knowledge base schemas.
 """
 from datetime import datetime
 from typing import Optional, List
+
 from pydantic import BaseModel, Field
 
 
-# ============ 知识库 Schema ============
-
 class KnowledgeBaseCreate(BaseModel):
-    """创建知识库请求"""
-    name: str = Field(..., min_length=1, max_length=255, description="知识库名称")
-    description: Optional[str] = Field(None, description="知识库描述")
+    name: str = Field(..., min_length=1, max_length=255, description="Knowledge base name")
+    description: Optional[str] = Field(None, description="Knowledge base description")
 
 
 class KnowledgeBaseUpdate(BaseModel):
-    """更新知识库请求"""
-    name: Optional[str] = Field(None, min_length=1, max_length=255, description="知识库名称")
-    description: Optional[str] = Field(None, description="知识库描述")
+    name: Optional[str] = Field(None, min_length=1, max_length=255, description="Knowledge base name")
+    description: Optional[str] = Field(None, description="Knowledge base description")
 
 
 class KnowledgeBaseResponse(BaseModel):
-    """知识库响应"""
     id: int
     name: str
     description: Optional[str]
@@ -37,15 +33,11 @@ class KnowledgeBaseResponse(BaseModel):
 
 
 class KnowledgeBaseListResponse(BaseModel):
-    """知识库列表响应"""
     knowledge_bases: List[KnowledgeBaseResponse]
     total: int
 
 
-# ============ 文档 Schema ============
-
 class DocumentResponse(BaseModel):
-    """文档响应"""
     id: int
     kb_id: int
     filename: str
@@ -62,16 +54,16 @@ class DocumentResponse(BaseModel):
         from_attributes = True
 
 
+class DocumentPreviewResponse(BaseModel):
+    preview_text: str
+
+
 class DocumentListResponse(BaseModel):
-    """文档列表响应"""
     documents: List[DocumentResponse]
     total: int
 
 
-# ============ 文档分块 Schema ============
-
 class DocumentChunkResponse(BaseModel):
-    """文档分块响应"""
     id: int
     document_id: int
     chunk_index: int
@@ -84,6 +76,5 @@ class DocumentChunkResponse(BaseModel):
 
 
 class DocumentChunkListResponse(BaseModel):
-    """文档分块列表响应"""
     chunks: List[DocumentChunkResponse]
     total: int
