@@ -8,7 +8,7 @@ def _meta_tools_for_role(user_role: str):
     """
     ensure_dispatcher_meta_tools_loaded()
     selected_tools = []
-    for name in ["cli_list", "cli_tool_doc", "dispatch_tool"]:
+    for name in ["cli_list", "cli_action_doc", "dispatch_tool"]:
         meta = TOOL_REGISTRY.get(name)
         if not meta:
             continue

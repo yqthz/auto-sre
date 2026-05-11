@@ -1,7 +1,7 @@
 import json
 from typing import Any, Dict, Optional
 
-from app.agent.dispatcher.discovery import cli_list_payload, cli_tool_doc_payload
+from app.agent.dispatcher.discovery import cli_action_doc_payload, cli_list_payload
 from app.agent.dispatcher.executor import dispatch_action
 from app.agent.tools.security import register_tool
 from langchain_core.runnables import RunnableConfig
@@ -106,24 +106,89 @@ def _context_from_config(config: Optional[RunnableConfig]) -> tuple[str, str, st
     requires_approval=False,
 )
 def cli_list(config: Optional[RunnableConfig] = None) -> str:
-    """List available tool groups and actions for current session."""
+    """
+    列出当前会话可用的工具簇与 action。
+
+    功能解释:
+    - 返回 agent 当前可见的工具目录。
+    - 结果按 tool group 分组，每个 action 包含名称、描述、风险等级和审批标记。
+
+    使用场景:
+    - 让 agent 先发现可用工具，再决定下一步调用哪个 action。
+    - 做工具能力枚举和权限过滤结果检查。
+
+    参数说明:
+    - `config` (RunnableConfig，可选)：运行上下文，通常由框架注入。
+
+    必填字段:
+    - 无。
+
+    调用方法:
+    - `cli_list()`
+
+    返回关键字段:
+    - `tools`：工具簇数组。
+    - 每个工具簇包含 `tool` 与 `actions`。
+    - 每个 action 包含 `name`、`description`、`risk_level`、`requires_approval`。
+    """
     _user_id, user_role, mode, _thread_id, _trace_run_id = _context_from_config(config)
     payload = cli_list_payload(user_role=user_role, mode=mode)
     return json.dumps(payload, ensure_ascii=False)
 
 
 @register_tool(
-    name="cli_tool_doc",
+    name="cli_action_doc",
     permission="info",
     roles=["admin", "sre", "viewer"],
     tags=["dispatcher"],
     requires_approval=False,
+    description="Get doc string for one action",
 )
-def cli_tool_doc(tool: str, config: Optional[RunnableConfig] = None) -> str:
-    """Get minimal structured doc for a tool group."""
+def cli_action_doc(action: str, config: Optional[RunnableConfig] = None) -> str:
+    """
+    获取某个 action 的 doc string。
+
+    功能解释:
+    - 返回指定 action 的详细使用文档。
+    - 适合在参数不确定、调用方式不明确时做精确查阅。
+
+    使用场景:
+    - agent 已知道 action 名称，但还不知道具体字段含义、默认值、约束和调用示例。
+    - 需要补充某个 action 的详细说明时。
+
+    参数说明:
+    - `action` (str，必填)：完整 action 名称。
+    - `config` (RunnableConfig，可选)：运行上下文。
+
+    必填字段:
+    - `action`
+
+    调用方法:
+    - `cli_action_doc(action="prometheus.query_prometheus_metrics")`
+
+    返回关键字段:
+    - `action`：入参回显。
+    - `doc`：该 action 的 doc string。
+    - 找不到或无权限时 `doc` 为空字符串。
+    """
     _user_id, user_role, mode, _thread_id, _trace_run_id = _context_from_config(config)
-    payload = cli_tool_doc_payload(tool=tool, user_role=user_role, mode=mode)
+    payload = cli_action_doc_payload(action=action, user_role=user_role, mode=mode)
     return json.dumps(payload, ensure_ascii=False)
+
+
+# @register_tool(
+#     name="cli_tool_doc",
+#     permission="info",
+#     roles=["admin", "sre", "viewer"],
+#     tags=["dispatcher"],
+#     requires_approval=False,
+#     description="Get structured docs for one tool group (legacy)",
+# )
+# def cli_tool_doc(tool: str, config: Optional[RunnableConfig] = None) -> str:
+#     """Get minimal structured doc for a tool group."""
+#     _user_id, user_role, mode, _thread_id, _trace_run_id = _context_from_config(config)
+#     payload = cli_tool_doc_payload(tool=tool, user_role=user_role, mode=mode)
+#     return json.dumps(payload, ensure_ascii=False)
 
 
 @register_tool(
@@ -134,7 +199,34 @@ def cli_tool_doc(tool: str, config: Optional[RunnableConfig] = None) -> str:
     requires_approval=False,
 )
 def dispatch_tool(action: str, params: Dict[str, Any], config: Optional[RunnableConfig] = None) -> str:
-    """Execute one action through dispatcher policy gateway."""
+    """
+    通过分发器执行指定 action。
+
+    功能解释:
+    - 按当前角色和模式执行权限校验后调用具体工具。
+    - 是真正的工具执行入口，而不是发现接口。
+
+    使用场景:
+    - agent 已决定要调用哪个 action，并准备好参数时。
+    - 统一走策略网关执行动作。
+
+    参数说明:
+    - `action` (str，必填)：完整 action 名称。
+    - `params` (dict，必填)：传给目标工具的参数字典。
+    - `config` (RunnableConfig，可选)：运行上下文。
+
+    必填字段:
+    - `action`
+    - `params`
+
+    调用方法:
+    - `dispatch_tool(action="check_actuator_health", params={})`
+    - `dispatch_tool(action="query_prometheus_by_promql", params={"promql":"up"})`
+
+    返回关键字段:
+    - 返回目标 action 的执行结果字符串，通常是 JSON。
+    - 若权限或参数错误，返回错误结构。
+    """
     # 保留上下文提取，便于未来扩展，不在执行层写审计日志。
     _user_id, user_role, mode, _thread_id, _trace_run_id = _context_from_config(config)
 

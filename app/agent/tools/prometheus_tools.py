@@ -164,7 +164,34 @@ def _extract_range_series(data: Dict[str, Any], limit_points: int = 120) -> List
 )
 def query_prometheus_metrics(alert_name: str, instance: str) -> str:
     """
-    Query Prometheus metrics snapshot by alert type and instance.
+    按告警类型和实例名查询一组预定义 Prometheus 指标快照。
+
+    功能解释:
+    - 根据 `alert_name` 在预定义映射中选择一组 PromQL 模板。
+    - 将 `instance` 注入模板并逐条查询，返回指标名、说明、单位、值和 PromQL。
+    - 适合在“已知告警类型”的情况下快速收集关联指标。
+
+    使用场景:
+    - 某类告警（如 CPU、内存、GC、连接池）出现时，快速拉取关联指标。
+    - 作为诊断流程中的第一跳，先看一组预定义指标再决定是否下钻。
+
+    参数说明:
+    - `alert_name` (str，必填)：告警类型键名，必须存在于内置映射中。
+    - `instance` (str，必填)：目标实例标识，通常是 `job:instance` 或服务实例名。
+
+    必填字段:
+    - `alert_name`
+    - `instance`
+
+    调用方法:
+    - `query_prometheus_metrics(alert_name="cpu_high", instance="app-1")`
+    - `dispatch_tool(action="query_prometheus_metrics", params={"alert_name":"cpu_high","instance":"app-1"})`
+
+    返回关键字段:
+    - `queried_at`：查询时间。
+    - `alert_name` / `instance`：入参回显。
+    - `metrics`：指标列表，每项包含 `name`、`label`、`value`、`unit`、`promql`。
+    - 不支持的告警类型会返回 `warning`。
     """
     metric_defs = ALERT_METRICS_MAP.get(alert_name)
     if not metric_defs:
@@ -224,8 +251,39 @@ def query_prometheus_range_metrics(
     step_seconds: int = 30,
 ) -> str:
     """
-    Query Prometheus range metrics by alert type and instance.
-    start_time/end_time must be ISO-8601, e.g. 2026-04-30T10:00:00Z.
+    按告警类型和实例查询一组 Prometheus 区间指标。
+
+    功能解释:
+    - 与 `query_prometheus_metrics` 类似，但返回时间序列区间数据。
+    - 适合观察趋势、回放告警发生前后的变化。
+    - `start_time` / `end_time` 使用 ISO-8601 时间格式。
+
+    使用场景:
+    - 分析告警前后指标趋势。
+    - 查看请求量、错误率、延迟等随时间变化情况。
+
+    参数说明:
+    - `alert_name` (str，必填)：告警类型键名。
+    - `instance` (str，必填)：目标实例标识。
+    - `start_time` (str，必填)：区间起始时间，ISO-8601，例如 `2026-04-30T10:00:00Z`。
+    - `end_time` (str，必填)：区间结束时间，ISO-8601。
+    - `step_seconds` (int，可选，默认 `30`)：查询步长秒数，范围会限制在 `5 ~ 3600`。
+
+    必填字段:
+    - `alert_name`
+    - `instance`
+    - `start_time`
+    - `end_time`
+
+    调用方法:
+    - `query_prometheus_range_metrics(alert_name="cpu_high", instance="app-1", start_time="2026-04-30T10:00:00Z", end_time="2026-04-30T11:00:00Z")`
+
+    返回关键字段:
+    - `queried_at`：查询时间。
+    - `alert_name` / `instance`：入参回显。
+    - `time_range`：标准化后的开始/结束时间与步长。
+    - `series`：指标序列列表，每项包含 `name`、`label`、`unit`、`promql`、`series`。
+    - 参数非法时返回 `warning`。
     """
     metric_defs = ALERT_METRICS_MAP.get(alert_name)
     if not metric_defs:
@@ -327,9 +385,38 @@ def query_prometheus_by_promql(
     step_seconds: int = 30,
 ) -> str:
     """
-    Query Prometheus directly by PromQL.
-    mode supports: instant | range.
-    For range mode, provide start_time/end_time in ISO-8601 and optional step_seconds.
+    直接执行任意 PromQL 查询，支持瞬时查询和区间查询。
+
+    功能解释:
+    - `mode=instant` 时调用即时查询接口。
+    - `mode=range` 时调用区间查询接口，需提供时间范围。
+    - 返回结果会做轻量压缩，避免一次性输出过大。
+
+    使用场景:
+    - 需要临时验证某个 PromQL 是否正确。
+    - 预定义告警映射之外的临时诊断查询。
+
+    参数说明:
+    - `promql` (str，必填)：PromQL 表达式。
+    - `mode` (str，可选，默认 `instant`)：`instant` 或 `range`。
+    - `start_time` (str，可选，range 模式必填)：ISO-8601 起始时间。
+    - `end_time` (str，可选，range 模式必填)：ISO-8601 结束时间。
+    - `step_seconds` (int，可选，默认 `30`)：区间查询步长，限制在 `5 ~ 3600`。
+
+    必填字段:
+    - `promql`
+
+    调用方法:
+    - `query_prometheus_by_promql(promql='up')`
+    - `query_prometheus_by_promql(promql='rate(http_server_requests_seconds_count[5m])', mode='range', start_time='2026-04-30T10:00:00Z', end_time='2026-04-30T11:00:00Z', step_seconds=30)`
+
+    返回关键字段:
+    - `queried_at`：查询时间。
+    - `promql` / `mode`：入参回显。
+    - `status`：Prometheus API 状态。
+    - `data`：查询结果，`instant` 返回向量结果，`range` 返回时间序列结果。
+    - range 模式附带 `time_range`。
+    - 参数或查询错误时返回 `warning` 或 `error`。
     """
     mode = (mode or "instant").strip().lower()
     if mode not in {"instant", "range"}:
@@ -477,7 +564,31 @@ def query_prometheus_by_promql(
 )
 def query_prometheus_targets_health(job: str = "", instance: str = "") -> str:
     """
-    Query target/scrape health metrics to identify collection pipeline issues.
+    查询 Prometheus target 抓取健康指标，用于定位采集链路问题。
+
+    功能解释:
+    - 查询 `up`、`scrape_duration_seconds`、`scrape_samples_post_metric_relabeling`、
+      `scrape_series_added` 等抓取相关指标。
+    - 可以按 `job` 或 `instance` 过滤。
+
+    使用场景:
+    - 目标掉线、抓取慢、样本量异常、时序增长异常时排查采集层问题。
+
+    参数说明:
+    - `job` (str，可选，默认 `""`)：Prometheus job 标签过滤条件。
+    - `instance` (str，可选，默认 `""`)：Prometheus instance 标签过滤条件。
+
+    必填字段:
+    - 无。
+
+    调用方法:
+    - `query_prometheus_targets_health()`
+    - `query_prometheus_targets_health(job="node-exporter")`
+
+    返回关键字段:
+    - `queried_at`：查询时间。
+    - `job` / `instance`：过滤条件回显。
+    - `metrics`：抓取健康相关指标列表，每项包含 `name`、`promql`、`values`，失败项含 `error`。
     """
     label_filters: List[str] = []
     if job:
@@ -556,7 +667,33 @@ def query_prometheus_targets_health(job: str = "", instance: str = "") -> str:
     tags=["prometheus"],
 )
 def query_prometheus_targets(job: str = "", instance: str = "") -> str:
-    """Query Prometheus /api/v1/targets and return active target health details."""
+    """
+    查询 Prometheus `/api/v1/targets`，返回 active targets 的健康详情。
+
+    功能解释:
+    - 拉取当前 activeTargets 列表。
+    - 可按 `job` / `instance` 过滤，返回健康状态、最后抓取时间、错误信息、抓取地址等。
+
+    使用场景:
+    - 需要确认某个目标是否被 Prometheus 发现并正常抓取。
+    - 排查某个 job 或实例抓取失败原因。
+
+    参数说明:
+    - `job` (str，可选，默认 `""`)：过滤 job 标签。
+    - `instance` (str，可选，默认 `""`)：过滤 instance 标签。
+
+    必填字段:
+    - 无。
+
+    调用方法:
+    - `query_prometheus_targets()`
+    - `query_prometheus_targets(job="prometheus")`
+
+    返回关键字段:
+    - `ok`：调用是否成功。
+    - `target_count`：过滤后目标数量。
+    - `targets`：目标详情列表，含 `job`、`instance`、`health`、`last_scrape`、`last_error`、`scrape_url` 等。
+    """
     try:
         data = _prometheus_get("/api/v1/targets")
     except Exception as e:
@@ -616,7 +753,33 @@ def query_prometheus_targets(job: str = "", instance: str = "") -> str:
     tags=["prometheus"],
 )
 def query_prometheus_alerts(alert_name: str = "", state: str = "") -> str:
-    """Query Prometheus /api/v1/alerts and return current alert states."""
+    """
+    查询 Prometheus `/api/v1/alerts`，返回当前告警状态。
+
+    功能解释:
+    - 拉取当前 active alerts。
+    - 可按告警名和状态过滤。
+
+    使用场景:
+    - 查看当前有哪些告警正在触发。
+    - 按告警名定位某个规则的状态。
+
+    参数说明:
+    - `alert_name` (str，可选，默认 `""`)：告警名过滤条件。
+    - `state` (str，可选，默认 `""`)：告警状态过滤条件，例如 firing/pending。
+
+    必填字段:
+    - 无。
+
+    调用方法:
+    - `query_prometheus_alerts()`
+    - `query_prometheus_alerts(alert_name="HighCpuUsage", state="firing")`
+
+    返回关键字段:
+    - `ok`：调用是否成功。
+    - `alert_count`：过滤后告警数量。
+    - `alerts`：告警列表，每项含 `state`、`alertname`、`labels`、`annotations`、`active_at`、`value`。
+    """
     try:
         data = _prometheus_get("/api/v1/alerts")
     except Exception as e:

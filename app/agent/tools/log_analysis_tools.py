@@ -175,8 +175,36 @@ def _read_tail_lines(path: Path, limit: int) -> List[str]:
 )
 def analyze_log_around_alert(alert_time: str, window_minutes: int = 5) -> str:
     """
-    Analyze ERROR/WARN logs around alert time and return structured summary JSON.
-    Logs are selected automatically from fixed daily log files.
+    围绕告警时间分析日志中的 ERROR/WARN 片段，输出结构化摘要。
+
+    功能解释:
+    - 自动根据 `alert_time` 选择日志文件。
+    - 在给定时间窗口内统计 ERROR/WARN 事件、慢请求和 5xx 请求。
+    - 对重复报错做聚合，输出高频问题摘要。
+
+    使用场景:
+    - 告警发生后，先看附近窗口内日志发生了什么。
+    - 分析报错集中点、慢请求模式、是否存在大量解析失败日志。
+
+    参数说明:
+    - `alert_time` (str，必填)：告警时间，建议 ISO-8601。
+    - `window_minutes` (int，可选，默认 `5`)：告警前后窗口，范围会限制在 `1 ~ 60`。
+
+    必填字段:
+    - `alert_time`
+
+    调用方法:
+    - `analyze_log_around_alert(alert_time="2026-05-11T10:00:00+08:00")`
+    - `dispatch_tool(action="analyze_log_around_alert", params={"alert_time":"2026-05-11T10:00:00+08:00","window_minutes":10})`
+
+    返回关键字段:
+    - `analyzed_at`：分析时间。
+    - `time_range`：实际分析窗口。
+    - `log_files`：参与分析的日志文件列表。
+    - `entries`：聚合后的 ERROR/WARN 摘要。
+    - `slow_requests`：慢请求列表。
+    - `error_requests`：5xx 请求列表。
+    - `error_count` / `warn_count` / `parse_error_count`：统计计数。
     """
     alert_dt = _parse_iso_datetime(alert_time)
     if not alert_dt:
@@ -304,8 +332,42 @@ def retrieve_log_context(
     case_sensitive: bool = False,
 ) -> str:
     """
-    回捞日志匹配 pattern 的上下文（前后 N 行），用于对聚合结果做原文复核。
-    pattern_type 支持 literal/regex。日志文件按 alert_time 自动选择。
+    在日志中检索 `pattern`，并返回命中行前后上下文的结构化结果。
+
+    功能解释:
+    - 支持 literal 和 regex 两种模式。
+    - 自动根据 `alert_time` 选择对应时间窗口内的日志文件。
+    - 返回命中行、上下文行、文件路径和匹配元信息。
+
+    使用场景:
+    - 对聚合分析中的高频错误做原文复核。
+    - 搜索特定 traceId、错误片段、URI、异常关键词。
+
+    参数说明:
+    - `pattern` (str，必填)：匹配模式，文本或正则。
+    - `alert_time` (str，必填)：告警时间，建议 ISO-8601。
+    - `window_minutes` (int，可选，默认 `5`)：时间窗口，范围 `1 ~ 60`。
+    - `context_lines` (int，可选，默认 `3`)：命中前后上下文行数，范围 `0 ~ 20`。
+    - `max_matches` (int，可选，默认 `3`)：最多返回多少个命中，范围 `1 ~ 10`。
+    - `pattern_type` (str，可选，默认 `literal`)：`literal` 或 `regex`。
+    - `case_sensitive` (bool，可选，默认 `False`)：是否区分大小写。
+
+    必填字段:
+    - `pattern`
+    - `alert_time`
+
+    调用方法:
+    - `retrieve_log_context(pattern="traceId=xxx", alert_time="2026-05-11T10:00:00+08:00")`
+    - `retrieve_log_context(pattern="NullPointerException", alert_time="2026-05-11T10:00:00+08:00", pattern_type="literal", case_sensitive=False)`
+
+    返回关键字段:
+    - `analyzed_at`：分析时间。
+    - `time_range`：实际检索窗口。
+    - `log_files`：参与检索的日志文件。
+    - `pattern` / `pattern_type` / `case_sensitive`：检索条件回显。
+    - `context_lines` / `max_matches`：上下文配置。
+    - `matches_found`：命中数。
+    - `matches`：命中列表，每项含文件、命中行号、命中内容和上下文。
     """
     alert_dt = _parse_iso_datetime(alert_time)
     if not alert_dt:
@@ -415,8 +477,35 @@ def retrieve_log_context_raw(
     case_sensitive: bool = False,
 ) -> str:
     """
-    回捞日志原始上下文片段。
-    pattern_type 支持 literal/regex。日志文件按 alert_time 自动选择。
+    返回日志命中片段的原始文本，不做 JSON 结构化包装。
+
+    功能解释:
+    - 与 `retrieve_log_context` 的检索逻辑一致。
+    - 输出为纯文本片段，适合人工直接阅读或复制到其他系统。
+
+    使用场景:
+    - 需要直接查看原始日志段落。
+    - 需要更接近原文格式的上下文。
+
+    参数说明:
+    - `pattern` (str，必填)：匹配模式。
+    - `alert_time` (str，必填)：告警时间。
+    - `window_minutes` (int，可选，默认 `5`)：时间窗口。
+    - `context_lines` (int，可选，默认 `3`)：上下文行数。
+    - `max_matches` (int，可选，默认 `3`)：最多返回命中数。
+    - `pattern_type` (str，可选，默认 `literal`)：`literal` 或 `regex`。
+    - `case_sensitive` (bool，可选，默认 `False`)：是否区分大小写。
+
+    必填字段:
+    - `pattern`
+    - `alert_time`
+
+    调用方法:
+    - `retrieve_log_context_raw(pattern="traceId=xxx", alert_time="2026-05-11T10:00:00+08:00")`
+
+    返回关键字段:
+    - 直接返回纯文本内容，不做 JSON 包装。
+    - 无命中时返回简短错误或提示字符串。
     """
     alert_dt = _parse_iso_datetime(alert_time)
     if not alert_dt:

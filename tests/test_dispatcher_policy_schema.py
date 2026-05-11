@@ -12,6 +12,7 @@ def _fake_meta() -> ActionMeta:
         tool_group="log",
         fn=lambda **_: None,
         description="",
+        doc="",
         roles=["viewer", "sre", "admin"],
         permission="info",
         requires_approval=False,
@@ -22,7 +23,7 @@ def _fake_meta() -> ActionMeta:
             "type": "object",
             "properties": {
                 "log_file": {"type": "string", "minLength": 1},
-                "alert_time": {"type": "string", "pattern": r"^\\d{4}-\\d{2}-\\d{2}T"},
+                "alert_time": {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}T"},
                 "window_minutes": {"type": "integer", "minimum": 1, "maximum": 60},
             },
             "required": ["log_file", "alert_time"],

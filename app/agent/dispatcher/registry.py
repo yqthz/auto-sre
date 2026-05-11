@@ -62,6 +62,7 @@ class ActionMeta:
     tool_group: str
     fn: Callable[..., Any]
     description: str
+    doc: str
     roles: List[str]      
     permission: str
     requires_approval: bool
@@ -270,7 +271,7 @@ def list_actions() -> List[ActionMeta]:
 
     for tool_name, meta in TOOL_REGISTRY.items():
         # Meta-tools are exposed directly and should not be re-dispatched.
-        if tool_name in {"cli_list", "cli_tool_doc", "dispatch_tool"}:
+        if tool_name in {"cli_list", "cli_action_doc", "dispatch_tool"}:
             continue
 
         fn = meta["fn"]
@@ -297,6 +298,7 @@ def list_actions() -> List[ActionMeta]:
                 tool_group=group,
                 fn=fn,
                 description=(meta.get("description") or "").strip(),
+                doc=(meta.get("doc") or "").strip(),
                 roles=list(meta.get("roles") or []),
                 permission=str(meta.get("permission") or "info"),
                 requires_approval=requires_approval,

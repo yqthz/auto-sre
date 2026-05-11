@@ -18,6 +18,7 @@ def _meta(max_retries: int = 1, retry_on_kinds=None, requires_approval: bool = F
         tool_group="misc",
         fn=lambda value: f"legacy:{value}",
         description="",
+        doc="",
         roles=["viewer"],
         permission="info",
         requires_approval=requires_approval,

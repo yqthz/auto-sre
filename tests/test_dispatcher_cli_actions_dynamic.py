@@ -16,6 +16,7 @@ def _fake_meta() -> ActionMeta:
         tool_group="misc",
         fn=_fake_handler,
         description="",
+        doc="",
         roles=["viewer"],
         permission="info",
         requires_approval=False,

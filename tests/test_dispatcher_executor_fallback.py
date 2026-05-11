@@ -13,6 +13,7 @@ def _fake_meta() -> ActionMeta:
         tool_group="misc",
         fn=lambda value: f"legacy:{value}",
         description="",
+        doc="",
         roles=["viewer"],
         permission="info",
         requires_approval=False,

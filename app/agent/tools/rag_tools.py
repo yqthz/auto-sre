@@ -62,39 +62,36 @@ async def search_knowledge_base(
     config: Optional[RunnableConfig] = None,
 ) -> str:
     """
-    【知识库搜索】使用混合检索（向量 + 关键词）召回并排序相关文档。
-    当前 RAG 权限策略为“读共享、写隔离”：读取不按 user_id 隔离，
-    写入、更新、删除等管理操作仍由 API 层按知识库 owner 校验。
+    使用混合检索（向量 + 关键词）召回并排序相关文档。
 
-    Args:
-        query: 搜索关键词，如 "OOM killer"、"502 Bad Gateway"。
-        kb_id: 可选；指定知识库范围。为空时在全部可读知识库中检索。
-        top_k: 返回结果数量，范围会被限制到 1..20。
-    Returns:
-        JSON 字符串，格式为:
-        {
-          "ok": bool,
-          "query": str,
-          "kb_id": int | null,
-          "top_k": int,
-          "results": [
-            {
-              "rank": int,
-              "document_id": int,
-              "kb_id": int,
-              "filename": str,
-              "document_score": float,
-              "matched_chunks": int,
-              "best_chunk": {
-                "chunk_id": int,
-                "content": str,
-                "metadata": dict
-              }
-            }
-          ],
-          "message": str,   # 仅空结果场景
-          "error": str      # 仅失败场景
-        }
+    功能解释:
+    - 使用 `query` 生成向量并执行混合检索。
+    - 可选指定 `kb_id` 限定知识库范围。
+    - 返回文档级结果、最佳 chunk 以及简化后的分数信息。
+
+    使用场景:
+    - 需要根据错误关键词、告警描述或现象描述检索相关文档。
+    - 用于排障知识回溯、经验库匹配、历史案例查找。
+
+    参数说明:
+    - `query` (str，必填)：检索关键词。
+    - `kb_id` (int，可选，默认 `None`)：知识库 ID，不传则在可读知识库中检索。
+    - `top_k` (int，可选，默认 `5`)：返回条数，范围会限制在 `1 ~ 20`。
+    - `config` (RunnableConfig，可选)：运行上下文，通常由框架注入。
+
+    必填字段:
+    - `query`
+
+    调用方法:
+    - `search_knowledge_base(query="502 Bad Gateway")`
+    - `search_knowledge_base(query="OOM killer", kb_id=12, top_k=3)`
+
+    返回关键字段:
+    - `ok`：是否成功。
+    - `query` / `kb_id` / `top_k`：入参回显。
+    - `results`：结果列表，每项包含 `rank`、`document_id`、`kb_id`、`filename`、`document_score`、`matched_chunks`、`best_chunk`。
+    - 无结果时附带 `message`。
+    - 失败时附带 `error`。
     """
     logger.info(f"RAG tool: searching for '{query}' (kb_id={kb_id}, top_k={top_k})")
     top_k = max(1, min(int(top_k), 20))
@@ -219,24 +216,28 @@ async def search_knowledge_base(
 )
 async def list_knowledge_bases(config: Optional[RunnableConfig] = None) -> str:
     """
-    列出当前可检索的知识库，供 agent 获取 kb_id 后再调用 search_knowledge_base。
-    当前 RAG 权限策略为“读共享、写隔离”：这里列出组织内 completed 文档所在知识库，
-    不按 user_id 做读取隔离。
+    列出当前可检索的知识库。
 
-    Returns:
-        JSON 字符串，格式为:
-        {
-          "ok": bool,
-          "knowledge_bases": [
-            {
-              "kb_id": int,
-              "name": str,
-              "description": str,
-              "document_count": int,
-              "chunk_count": int
-            }
-          ]
-        }
+    功能解释:
+    - 返回当前环境中可读的知识库列表。
+    - 用于先获取 `kb_id`，再调用 `search_knowledge_base` 精确检索。
+
+    使用场景:
+    - 不知道该搜哪个知识库时先列出全部可读知识库。
+    - 帮助 agent 选择检索范围。
+
+    参数说明:
+    - `config` (RunnableConfig，可选)：运行上下文，通常由框架注入。
+
+    必填字段:
+    - 无。
+
+    调用方法:
+    - `list_knowledge_bases()`
+
+    返回关键字段:
+    - `ok`：是否成功。
+    - `knowledge_bases`：知识库列表，每项通常含 `kb_id`、`name`、`description`、`document_count`、`chunk_count`。
     """
     try:
         items = await pg_manager.list_knowledge_bases()
@@ -269,14 +270,31 @@ async def list_knowledge_bases(config: Optional[RunnableConfig] = None) -> str:
 )
 async def get_knowledge_document(document_id: int, config: Optional[RunnableConfig] = None) -> str:
     """
-    获取知识库文档全文（只读 content_text，不做 chunk 拼接兜底）。
-    当前 RAG 权限策略为“读共享、写隔离”：读取 completed 文档不按 user_id 隔离。
+    获取知识库文档全文。
 
-    Args:
-        document_id: 文档 ID
+    功能解释:
+    - 读取文档完整 `content_text`。
+    - 仅允许读取状态为 `completed` 的文档。
 
-    Returns:
-        JSON 字符串。
+    使用场景:
+    - 需要查看文档全文而不是检索结果片段时使用。
+    - 对命中文档做进一步人工或 agent 阅读。
+
+    参数说明:
+    - `document_id` (int，必填)：文档 ID。
+    - `config` (RunnableConfig，可选)：运行上下文。
+
+    必填字段:
+    - `document_id`
+
+    调用方法:
+    - `get_knowledge_document(document_id=123)`
+
+    返回关键字段:
+    - `ok`：是否成功。
+    - `document_id`、`kb_id`、`filename`、`status`、`updated_at`。
+    - `content_text`：文档全文。
+    - 失败时附带 `error`。
     """
     try:
         record = await pg_manager.get_document_content(int(document_id))
@@ -405,20 +423,41 @@ async def get_knowledge_document_context(
     config: Optional[RunnableConfig] = None,
 ) -> str:
     """
-    在文档全文(content_text)中定位 query，并回捞命中前后上下文。
-    当前 RAG 权限策略为“读共享、写隔离”：读取 completed 文档不按 user_id 隔离。
+    在文档全文中定位 `query`，并回捞命中前后的上下文。
 
-    Args:
-        document_id: 文档 ID
-        query: 查询词或正则表达式
-        before_chars: 命中前回捞字符数
-        after_chars: 命中后回捞字符数
-        max_matches: 最多返回命中数量
-        use_regex: 是否将 query 按正则处理
-        case_sensitive: 是否区分大小写
+    功能解释:
+    - 在指定文档全文中搜索关键词或正则表达式。
+    - 返回每个命中的上下文片段、起止位置和匹配文本。
 
-    Returns:
-        JSON 字符串。
+    使用场景:
+    - 需要在长文档中找某个术语、错误描述或配置项。
+    - 对 RAG 检索到的文档做进一步定位。
+
+    参数说明:
+    - `document_id` (int，必填)：文档 ID。
+    - `query` (str，必填)：搜索词或正则。
+    - `before_chars` (int，可选，默认 `300`)：命中前回捞字符数，范围 `50 ~ 2000`。
+    - `after_chars` (int，可选，默认 `300`)：命中后回捞字符数，范围 `50 ~ 2000`。
+    - `max_matches` (int，可选，默认 `5`)：最多返回命中数，范围 `1 ~ 20`。
+    - `use_regex` (bool，可选，默认 `False`)：是否按正则处理 `query`。
+    - `case_sensitive` (bool，可选，默认 `False`)：是否区分大小写。
+    - `config` (RunnableConfig，可选)：运行上下文。
+
+    必填字段:
+    - `document_id`
+    - `query`
+
+    调用方法:
+    - `get_knowledge_document_context(document_id=123, query="timeout")`
+    - `get_knowledge_document_context(document_id=123, query="error\\s+\\d+", use_regex=True)`
+
+    返回关键字段:
+    - `ok`：是否成功。
+    - `document_id`、`kb_id`、`filename`、`query`。
+    - `use_regex` / `case_sensitive` / `before_chars` / `after_chars`：检索配置回显。
+    - `total_matches`：命中总数。
+    - `matches`：命中列表，每项包含 `match_text`、`start`、`end`、`context_start`、`context_end`、`context`。
+    - 失败时附带 `error`。
     """
     try:
         before_chars = max(50, min(int(before_chars), 2000))

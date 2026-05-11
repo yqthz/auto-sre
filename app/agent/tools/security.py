@@ -45,6 +45,7 @@ def register_tool(
     roles=None,
     tags=None,
     requires_approval: bool | None = None,
+    description: str = "",
 ):
     """
     Register a callable as an agent tool and store its metadata in ``TOOL_REGISTRY``.
@@ -62,6 +63,7 @@ def register_tool(
         requires_approval: Whether the tool is considered approval-gated/sensitive.
             - ``None`` (default): auto-derived from ``permission == "danger"``
             - explicit ``True``/``False``: overrides the default derivation
+        description: Optional short description for discovery lists.
     """
     if roles is None:
         roles = ["admin"]
@@ -78,7 +80,8 @@ def register_tool(
             "roles": roles,
             "tags": tags,
             "requires_approval": requires_approval,
-            "description": func.__doc__,
+            "description": (description or "").strip(),
+            "doc": (func.__doc__ or "").strip(),
         }
         return func
 
