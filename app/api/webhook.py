@@ -484,11 +484,11 @@ async def receive_alert(
                 "user_role": AUTO_BOT_ROLE,
                 "mode": "auto",
                 "alert_context": alert_context,
-                "evidence": [],
-                "hypotheses": [],
+                # "evidence": [],
+                # "hypotheses": [],
                 "approval_requests": [],
                 "actions_executed": [],
-                "messages": [HumanMessage(content=f"检测到重复告警，继续执行自动排查：{alert.labels}")],
+                "messages": [HumanMessage(content=f"收到告警，请进行自动排查：{alert.labels}")],
                 }
                 logger.info(
                     "Alert fingerprint exists, but duplicate-skip is temporarily disabled: "
@@ -587,8 +587,8 @@ async def receive_alert(
                 "user_role": AUTO_BOT_ROLE,
                 "mode": "auto",
                 "alert_context": alert_context,
-                    "evidence": [],
-                    "hypotheses": [],
+                    # "evidence": [],
+                    # "hypotheses": [],
                     "approval_requests": [],
                     "actions_executed": [],
                     "messages": [HumanMessage(content=f"收到新告警，请开始自动排查：{alert.labels}")],

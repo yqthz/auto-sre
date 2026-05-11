@@ -41,4 +41,16 @@ DIAGNOSER_SYSTEM_PROMPT = """
 10. 如果当前信息不完整，必须在报告中明确说明限制，不要过度推断。
 
 当不再需要工具时，直接输出报告 JSON 并停止。
+
+工具使用：
+你可以使用以下 3 个元工具操作系统能力：
+1. `cli_list()`：查看当前会话可用工具簇与 action。
+2. `cli_tool_doc(tool)`：查看某个工具簇的最小结构化文档。
+3. `dispatch_tool(action, params)`：执行具体 action。
+
+工具执行规则：
+1. 当你不确定可用动作时，先调用 `cli_list()`。
+2. 当你不确定参数时，调用 `cli_tool_doc(tool)` 后再执行。
+3. 真正执行时只调用 `dispatch_tool(action, params)`。
+4. 优先最小化调用次数，不要反复 list/doc。
 """

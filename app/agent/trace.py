@@ -3,6 +3,7 @@ import uuid
 from typing import Any, Callable, Dict, Optional
 
 from app.agent.trace_runtime import extract_usage_from_llm_response, trace_runtime
+from app.core.logger import logger
 
 
 class LLMTrace:
@@ -10,6 +11,8 @@ class LLMTrace:
     def on_llm_start(*, run_id: Optional[str], call_id: str, node_name: str, model: str, input_preview: str) -> None:
         if not run_id:
             return
+        
+        logger.info(f"llm input: {input_preview}")
         trace_runtime.append_event(
             run_id=run_id,
             event_type="llm_call_start",
@@ -37,6 +40,8 @@ class LLMTrace:
         if usage:
             meta["usage"] = usage
             trace_runtime.add_usage(run_id, usage)
+        
+        logger.info(f"llm output: {output_preview}")
         trace_runtime.append_event(
             run_id=run_id,
             event_type="llm_call_end",
@@ -50,6 +55,8 @@ class LLMTrace:
     def on_llm_error(*, run_id: Optional[str], call_id: str, error: Exception) -> None:
         if not run_id:
             return
+        
+        logger.error(f"llm error: {error}")
         trace_runtime.append_event(
             run_id=run_id,
             event_type="llm_call_error",
@@ -104,6 +111,8 @@ class ToolTrace:
         if not run_id:
             return
         call_id = str(tool_call.get("id") or uuid.uuid4().hex)
+
+        logger.info(f"tool call: {tool_call}")
         trace_runtime.append_event(
             run_id=run_id,
             event_type="tool_call_start",
@@ -128,6 +137,8 @@ class ToolTrace:
         if not run_id:
             return
         resolved_call_id = str(call_id or uuid.uuid4().hex)
+
+        logger.info(f"tool {tool_name} call result: {output_preview}")
         trace_runtime.append_event(
             run_id=run_id,
             event_type="tool_call_end",
@@ -146,6 +157,8 @@ class ToolTrace:
         if not run_id:
             return
         resolved_call_id = str(call_id or uuid.uuid4().hex)
+
+        logger.error(f"tool {tool_name} call error: {error}")
         trace_runtime.append_event(
             run_id=run_id,
             event_type="tool_call_error",
