@@ -53,22 +53,22 @@ def ensure_tool_modules_loaded() -> None:
             # should not make dispatcher unavailable.
             LOAD_ERRORS[module_name] = str(e)
 
-    try:
-        from app.agent.tools.security import TOOL_REGISTRY
+    # try:
+    #     from app.agent.tools.security import TOOL_REGISTRY
 
-        docker_actions = sorted(
-            f"docker.{name}"
-            for name in TOOL_REGISTRY.keys()
-            if str(name).startswith("docker_")
-        )
-        logger.info(
-            "tool registry loaded: docker_actions_count=%s docker_actions=%s",
-            len(docker_actions),
-            docker_actions,
-        )
-        if LOAD_ERRORS:
-            logger.warning("tool module load errors: %s", LOAD_ERRORS)
-    except Exception as e:
-        logger.warning("failed to print tool registry debug info: %s", e)
+    #     docker_actions = sorted(
+    #         f"docker.{name}"
+    #         for name in TOOL_REGISTRY.keys()
+    #         if str(name).startswith("docker_")
+    #     )
+    #     logger.info(
+    #         "tool registry loaded: docker_actions_count=%s docker_actions=%s",
+    #         len(docker_actions),
+    #         docker_actions,
+    #     )
+    #     if LOAD_ERRORS:
+    #         logger.warning("tool module load errors: %s", LOAD_ERRORS)
+    # except Exception as e:
+    #     logger.warning("failed to print tool registry debug info: %s", e)
 
     _ALL_LOADED = True
