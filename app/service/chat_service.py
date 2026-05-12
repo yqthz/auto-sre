@@ -170,6 +170,16 @@ class ChatService:
         return str(value)
 
     @staticmethod
+    def _new_messages(messages: Any, processed_count: int) -> tuple[list[Any], int]:
+        if not isinstance(messages, list):
+            return [], processed_count
+        if processed_count < 0:
+            processed_count = 0
+        if processed_count > len(messages):
+            processed_count = 0
+        return messages[processed_count:], len(messages)
+
+    @staticmethod
     def _dispatch_request_extra(tool_call: dict) -> Dict[str, Any]:
         if str(tool_call.get("name") or "") != "dispatch_tool":
             return {}
@@ -371,6 +381,10 @@ class ChatService:
             # 获取 state
             snapshot = self.graph.get_state(config)
             snapshot_values = snapshot.values or {}
+            existing_messages = snapshot_values.get("messages", [])
+            processed_message_count = (
+                len(existing_messages) if isinstance(existing_messages, list) else 0
+            )
 
             # 找到最后一个待审批的 tool call
             last_message = (snapshot_values.get("messages") or [None])[-1]
@@ -508,7 +522,7 @@ class ChatService:
                                 snapshot_values, "actions_executed", action_record
                             )
                         },
-                        as_node="tools",
+                        as_node="sre_agent",
                     )
 
                 # 发送 tool approved
@@ -517,11 +531,14 @@ class ChatService:
                     "data": {"message": "工具调用已批准，正在执行..."}
                 }
 
+                should_auto_resume_tools = False
+
                 # 继续执行（不需要更新状态，直接 stream）
                 async for event in self.graph.astream(None, config=config, stream_mode="values"):
-                    if "messages" in event:
-                        last_message = event["messages"][-1]
-
+                    new_messages, processed_message_count = self._new_messages(
+                        event.get("messages"), processed_message_count
+                    )
+                    for last_message in new_messages:
                         # 工具执行结果
                         if isinstance(last_message, ToolMessage):
                             self._trace_tool_end(run_id, last_message)
@@ -581,12 +598,14 @@ class ChatService:
 
                             # 检查是否又有新的工具调用
                             if last_message.tool_calls:
+                                only_non_sensitive = True
                                 for tool_call in last_message.tool_calls:
                                     tool_name = tool_call["name"]
                                     args = tool_call["args"]
                                     requires_approval = bool(tool_approval_profile(tool_name, args).get("requires_approval", False))
 
                                     if requires_approval:
+                                        only_non_sensitive = False
                                         # 又遇到敏感工具，再次暂停
                                         approval_request = self._build_approval_request(tool_call)
                                         current_values = self.graph.get_state(config).values or {}
@@ -623,7 +642,7 @@ class ChatService:
                                             }
                                         }
 
-                                        await self.save_message(
+                                        approval_msg = await self.save_message(
                                             db,
                                             session.id,
                                             "assistant",
@@ -639,6 +658,7 @@ class ChatService:
                                         yield {
                                             "event": "tool_approval_required",
                                             "data": {
+                                                "message_id": approval_msg.id,
                                                 "tool_call_id": tool_call["id"],
                                                 "tool_name": tool_name,
                                                 "message": f"需要您的授权才能执行 {tool_name}",
@@ -647,6 +667,8 @@ class ChatService:
                                         }
                                         trace_runtime.end_run(run_id, status="success")
                                         return
+                                if only_non_sensitive:
+                                    should_auto_resume_tools = True
 
                             # 保存最终消息
                             if last_message.content:
@@ -656,6 +678,147 @@ class ChatService:
                                     "assistant",
                                     content=last_message.content
                                 )
+
+                while should_auto_resume_tools:
+                    should_auto_resume_tools = False
+                    async for event in self.graph.astream(None, config=config, stream_mode="values"):
+                        new_messages, processed_message_count = self._new_messages(
+                            event.get("messages"), processed_message_count
+                        )
+                        if not new_messages:
+                            continue
+                        for last_message in new_messages:
+                            if isinstance(last_message, ToolMessage):
+                                self._trace_tool_end(run_id, last_message)
+                                self._audit_tool_result(
+                                    tool_message=last_message,
+                                    user_id=user_id,
+                                    user_role=user_role,
+                                    session=session,
+                                    run_id=run_id,
+                                )
+                                tool_action = {
+                                    "tool_call_id": last_message.tool_call_id,
+                                    "tool_name": last_message.name,
+                                    "status": "executed",
+                                    "approved": True,
+                                    "executed": True,
+                                    "result_preview": str(last_message.content)[:500],
+                                    "timestamp": self._utc_now_iso(),
+                                }
+                                current_values = self.graph.get_state(config).values or {}
+                                self.graph.update_state(
+                                    config,
+                                    {
+                                        "actions_executed": self._append_state_item(
+                                            current_values, "actions_executed", tool_action
+                                        )
+                                    },
+                                    as_node="tools",
+                                )
+
+                                yield {
+                                    "event": "tool_call_result",
+                                    "data": {
+                                        "tool_call_id": last_message.tool_call_id,
+                                        "tool_name": last_message.name,
+                                        "result": last_message.content[:1000]
+                                    }
+                                }
+
+                                await self.save_message(
+                                    db,
+                                    session.id,
+                                    "tool",
+                                    content=last_message.content,
+                                    tool_call_id=last_message.tool_call_id,
+                                    tool_name=last_message.name
+                                )
+                            elif isinstance(last_message, AIMessage):
+                                if last_message.content:
+                                    yield {
+                                        "event": "agent_message_delta",
+                                        "data": {"delta": last_message.content}
+                                    }
+                                if last_message.tool_calls:
+                                    only_non_sensitive = True
+                                    for tool_call in last_message.tool_calls:
+                                        tool_name = tool_call["name"]
+                                        args = tool_call["args"]
+                                        requires_approval = bool(tool_approval_profile(tool_name, args).get("requires_approval", False))
+
+                                        if requires_approval:
+                                            only_non_sensitive = False
+                                            approval_request = self._build_approval_request(tool_call)
+                                            current_values = self.graph.get_state(config).values or {}
+                                            self.graph.update_state(
+                                                config,
+                                                {
+                                                    "approval_requests": self._append_state_item(
+                                                        current_values, "approval_requests", approval_request
+                                                    )
+                                                },
+                                                as_node="sre_agent",
+                                            )
+                                            tool_display = self.format_tool_call_display(tool_call)
+
+                                            self._trace_tool_start(run_id, tool_call)
+                                            self._audit_tool_request(
+                                                tool_call=tool_call,
+                                                user_id=user_id,
+                                                user_role=user_role,
+                                                session=session,
+                                                run_id=run_id,
+                                                status="approval_required",
+                                            )
+
+                                            yield {
+                                                "event": "tool_call_start",
+                                                "data": {
+                                                    "tool_call_id": tool_call["id"],
+                                                    "tool_name": tool_name,
+                                                    "args": tool_call["args"],
+                                                    "display": tool_display,
+                                                    "requires_approval": True,
+                                                    "approval_request": approval_request,
+                                                }
+                                            }
+
+                                            approval_msg = await self.save_message(
+                                                db,
+                                                session.id,
+                                                "assistant",
+                                                content=last_message.content,
+                                                tool_calls=[{**tool_call, "approval_request": approval_request}],
+                                                requires_approval=True,
+                                                status="pending"
+                                            )
+
+                                            session.status = "waiting"
+                                            await db.commit()
+
+                                            yield {
+                                                "event": "tool_approval_required",
+                                                "data": {
+                                                    "message_id": approval_msg.id,
+                                                    "tool_call_id": tool_call["id"],
+                                                    "tool_name": tool_name,
+                                                    "message": f"需要您的授权才能执行 {tool_name}",
+                                                    "approval_request": approval_request,
+                                                }
+                                            }
+                                            trace_runtime.end_run(run_id, status="success")
+                                            return
+                                    if only_non_sensitive:
+                                        should_auto_resume_tools = True
+
+                                if last_message.content:
+                                    await self.save_message(
+                                        db,
+                                        session.id,
+                                        "assistant",
+                                        content=last_message.content
+                                    )
 
                 trace_runtime.end_run(run_id, status="success")
                 yield {
@@ -824,7 +987,7 @@ class ChatService:
                                         as_node="sre_agent",
                                     )
                                     # 保存 AI 消息（包含工具调用）
-                                    await self.save_message(
+                                    approval_msg = await self.save_message(
                                         db,
                                         session.id,
                                         "assistant",
@@ -841,6 +1004,7 @@ class ChatService:
                                     yield {
                                         "event": "tool_approval_required",
                                         "data": {
+                                            "message_id": approval_msg.id,
                                             "tool_call_id": tool_call["id"],
                                             "tool_name": tool_name,
                                             "message": f"需要您的授权才能执行 {tool_name}",
@@ -976,7 +1140,7 @@ class ChatService:
                                         },
                                         as_node="sre_agent",
                                     )
-                                    await self.save_message(
+                                    approval_msg = await self.save_message(
                                         db,
                                         session.id,
                                         "assistant",
@@ -992,6 +1156,7 @@ class ChatService:
                                     yield {
                                         "event": "tool_approval_required",
                                         "data": {
+                                            "message_id": approval_msg.id,
                                             "tool_call_id": tool_call["id"],
                                             "tool_name": tool_name,
                                             "message": f"需要您的授权才能执行 {tool_name}",
