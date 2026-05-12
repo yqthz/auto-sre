@@ -110,19 +110,6 @@ class ChatService:
 
         return display
 
-    def format_shell_command_display(self, tool_name: str, args: dict) -> Optional[str]:
-        """提取并格式化 Shell 命令，用于前端展示"""
-        # 根据工具类型提取实际执行的命令
-        command = None
-
-        if tool_name == "restart_server":
-            container = args.get("container_name", "")
-            command = f"docker restart {container}"
-
-        if command:
-            return f"```bash\n{command}\n```"
-        return None
-
     @staticmethod
     def _utc_now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -150,7 +137,6 @@ class ChatService:
             "risk_level": risk_level,
             "impact": impact,
             "rollback": "not_provided",
-            "shell_command": self.format_shell_command_display(tool_name, args),
             "status": "pending",
             "created_at": self._utc_now_iso(),
         }
@@ -598,9 +584,9 @@ class ChatService:
                                 for tool_call in last_message.tool_calls:
                                     tool_name = tool_call["name"]
                                     args = tool_call["args"]
-                                    is_sensitive = bool(tool_approval_profile(tool_name, args).get("requires_approval", False))
+                                    requires_approval = bool(tool_approval_profile(tool_name, args).get("requires_approval", False))
 
-                                    if is_sensitive:
+                                    if requires_approval:
                                         # 又遇到敏感工具，再次暂停
                                         approval_request = self._build_approval_request(tool_call)
                                         current_values = self.graph.get_state(config).values or {}
@@ -614,9 +600,6 @@ class ChatService:
                                             as_node="sre_agent",
                                         )
                                         tool_display = self.format_tool_call_display(tool_call)
-                                        shell_command = self.format_shell_command_display(
-                                            tool_name, tool_call["args"]
-                                        )
 
                                         self._trace_tool_start(run_id, tool_call)
                                         self._audit_tool_request(
@@ -635,8 +618,6 @@ class ChatService:
                                                 "tool_name": tool_name,
                                                 "args": tool_call["args"],
                                                 "display": tool_display,
-                                                "shell_command": shell_command,
-                                                "is_sensitive": True,
                                                 "requires_approval": True,
                                                 "approval_request": approval_request,
                                             }
@@ -802,11 +783,10 @@ class ChatService:
                                 args = tool_call["args"]
 
                                 # 检查是否是敏感工具
-                                is_sensitive = bool(tool_approval_profile(tool_name, args).get("requires_approval", False))
+                                requires_approval = bool(tool_approval_profile(tool_name, args).get("requires_approval", False))
 
                                 # 格式化工具调用展示
                                 tool_display = self.format_tool_call_display(tool_call)
-                                shell_command = self.format_shell_command_display(tool_name, args)
 
                                 self._trace_tool_start(run_id, tool_call)
                                 self._audit_tool_request(
@@ -815,7 +795,7 @@ class ChatService:
                                     user_role=user_role,
                                     session=session,
                                     run_id=run_id,
-                                    status="approval_required" if is_sensitive else "requested",
+                                    status="approval_required" if requires_approval else "requested",
                                 )
 
                                 yield {
@@ -825,14 +805,12 @@ class ChatService:
                                         "tool_name": tool_name,
                                         "args": args,
                                         "display": tool_display,
-                                        "shell_command": shell_command,
-                                        "is_sensitive": is_sensitive,
-                                        "requires_approval": is_sensitive
+                                        "requires_approval": requires_approval,
                                     }
                                 }
 
                                 # 如果是敏感工具，暂停并等待授权
-                                if is_sensitive:
+                                if requires_approval:
                                     only_non_sensitive = False
                                     approval_request = self._build_approval_request(tool_call)
                                     current_values = self.graph.get_state(config).values or {}
@@ -961,9 +939,8 @@ class ChatService:
 
                                 tool_name = tool_call["name"]
                                 args = tool_call["args"]
-                                is_sensitive = bool(tool_approval_profile(tool_name, args).get("requires_approval", False))
+                                requires_approval = bool(tool_approval_profile(tool_name, args).get("requires_approval", False))
                                 tool_display = self.format_tool_call_display(tool_call)
-                                shell_command = self.format_shell_command_display(tool_name, args)
 
                                 self._trace_tool_start(run_id, tool_call)
                                 self._audit_tool_request(
@@ -972,7 +949,7 @@ class ChatService:
                                     user_role=user_role,
                                     session=session,
                                     run_id=run_id,
-                                    status="approval_required" if is_sensitive else "requested",
+                                    status="approval_required" if requires_approval else "requested",
                                 )
 
                                 yield {
@@ -982,13 +959,11 @@ class ChatService:
                                         "tool_name": tool_name,
                                         "args": args,
                                         "display": tool_display,
-                                        "shell_command": shell_command,
-                                        "is_sensitive": is_sensitive,
-                                        "requires_approval": is_sensitive
+                                        "requires_approval": requires_approval,
                                     }
                                 }
 
-                                if is_sensitive:
+                                if requires_approval:
                                     only_non_sensitive = False
                                     approval_request = self._build_approval_request(tool_call)
                                     current_values = self.graph.get_state(config).values or {}
