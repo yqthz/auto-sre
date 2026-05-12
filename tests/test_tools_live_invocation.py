@@ -116,15 +116,6 @@ class TestToolsLiveInvocation(unittest.TestCase):
             user_role="viewer",
         )
         self.assert_tool_ok(
-            "network.check_db_tcp_connectivity",
-            {
-                "db_host": self.profile.mysql.host,
-                "db_port": self.profile.mysql.host_port,
-                "timeout": 2.0,
-            },
-            user_role="viewer",
-        )
-        self.assert_tool_ok(
             "network.curl_http_endpoint",
             {"url": self.profile.app.host_base_url + self.profile.app.health_endpoint, "method": "GET"},
             user_role="viewer",

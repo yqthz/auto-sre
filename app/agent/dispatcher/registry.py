@@ -18,6 +18,21 @@ ALERT_NAME_ENUM = [
 ]
 
 ACTION_SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "log.overview_log_issues": {
+        "properties": {
+            "alert_time": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"^\d{4}-\d{2}-\d{2}T",
+            },
+            "window_minutes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60,
+            },
+        },
+        "additionalProperties": False,
+    },
     "log.analyze_log_around_alert": {
         "properties": {
             "alert_time": {
@@ -29,6 +44,56 @@ ACTION_SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 60,
+            },
+        },
+        "additionalProperties": False,
+    },
+    "log.analyze_slow_requests": {
+        "properties": {
+            "alert_time": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"^\d{4}-\d{2}-\d{2}T",
+            },
+            "window_minutes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60,
+            },
+            "min_cost_ms": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 600000,
+            },
+            "max_requests": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+            },
+        },
+        "additionalProperties": False,
+    },
+    "log.analyze_error_requests": {
+        "properties": {
+            "alert_time": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": r"^\d{4}-\d{2}-\d{2}T",
+            },
+            "window_minutes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60,
+            },
+            "min_status": {
+                "type": "integer",
+                "minimum": 400,
+                "maximum": 599,
+            },
+            "max_requests": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
             },
         },
         "additionalProperties": False,

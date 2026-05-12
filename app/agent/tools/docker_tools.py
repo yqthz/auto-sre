@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 
 from app.agent.runtime_profile import get_runtime_profile
 from app.agent.tools.security import register_tool
+from app.core.logger import logger
 
 MAX_LOG_CHARS = 12000
 
@@ -14,7 +15,11 @@ def _now() -> str:
 
 
 def _run_docker(args: List[str], project_dir: str, timeout: int = 8) -> Dict[str, Any]:
+    """运行 docker 命令"""
     try:
+
+        logger.info(f"exec docker {args}, project_dir: {project_dir}")
+
         proc = subprocess.run(
             ["docker", *args],
             cwd=project_dir,
@@ -84,6 +89,7 @@ def _parse_ps_json_lines(stdout: str) -> List[Dict[str, Any]]:
     permission="info",
     roles=["admin", "sre", "viewer"],
     tags=["docker"],
+    description="List Compose services and container states for the current project.",
 )
 def docker_compose_ps(project_dir: str = "") -> str:
     """
@@ -123,6 +129,9 @@ def docker_compose_ps(project_dir: str = "") -> str:
     selected_project_dir = project_dir or str(profile.compose_project_dir)
 
     result = _run_docker(["compose", "ps", "--format", "json"], selected_project_dir, timeout=8)
+
+    logger.info(f"exec docker compose ps result: {result}")
+
     if result.get("ok"):
         rows = _parse_ps_json_lines(str(result.get("stdout") or ""))
         return _json_result(
@@ -149,6 +158,7 @@ def docker_compose_ps(project_dir: str = "") -> str:
     permission="info",
     roles=["admin", "sre", "viewer"],
     tags=["docker"],
+    description="Inspect one container and return a status summary.",
 )
 def docker_inspect_container(container_name: str = "") -> str:
     """
@@ -187,7 +197,10 @@ def docker_inspect_container(container_name: str = "") -> str:
     profile = get_runtime_profile()
     selected_container = container_name or profile.app.container_name
     selected_project_dir = str(profile.compose_project_dir)
+
     result = _run_docker(["inspect", selected_container], selected_project_dir, timeout=8)
+
+    logger.info(f"exec docker inspect result: {result}")
 
     if not result.get("ok"):
         return _json_result(
@@ -204,10 +217,14 @@ def docker_inspect_container(container_name: str = "") -> str:
         return _json_result(False, container_name=selected_container, error_type="InvalidJson", error=str(e))
 
     item = parsed[0] if isinstance(parsed, list) and parsed else {}
+    # 获取运行状态
     state = item.get("State") if isinstance(item, dict) else {}
+    # 获取端口映射
     network_settings = item.get("NetworkSettings") if isinstance(item, dict) else {}
+    # 获取挂载配置
     host_config = item.get("HostConfig") if isinstance(item, dict) else {}
 
+    # 获取健康检查状态
     health = None
     if isinstance(state, dict):
         health_obj = state.get("Health")
@@ -237,6 +254,7 @@ def docker_inspect_container(container_name: str = "") -> str:
     permission="info",
     roles=["admin", "sre", "viewer"],
     tags=["docker"],
+    description="Read recent logs for one Compose service.",
 )
 def docker_compose_logs(service: str = "", tail: int = 200, project_dir: str = "") -> str:
     """
@@ -278,12 +296,16 @@ def docker_compose_logs(service: str = "", tail: int = 200, project_dir: str = "
     profile = get_runtime_profile()
     selected_project_dir = project_dir or str(profile.compose_project_dir)
     selected_service = service or profile.app.service_name
+
     tail = max(10, min(int(tail), 1000))
     result = _run_docker(
         ["compose", "logs", "--tail", str(tail), selected_service],
         selected_project_dir,
         timeout=12,
     )
+
+    logger.info(f"exec docker compose log result: {result}")
+
     stdout = str(result.get("stdout") or "")
     stderr = str(result.get("stderr") or "")
     lines = stdout.splitlines()
@@ -307,6 +329,7 @@ def docker_compose_logs(service: str = "", tail: int = 200, project_dir: str = "
     permission="info",
     roles=["admin", "sre", "viewer"],
     tags=["docker"],
+    description="Summarize the health of key Docker Compose services.",
 )
 def docker_service_status_summary(project_dir: str = "") -> str:
     """
@@ -341,6 +364,7 @@ def docker_service_status_summary(project_dir: str = "") -> str:
     """
     profile = get_runtime_profile()
     selected_project_dir = project_dir or str(profile.compose_project_dir)
+
     ps_payload = json.loads(docker_compose_ps(selected_project_dir))
 
     containers = [
@@ -353,6 +377,8 @@ def docker_service_status_summary(project_dir: str = "") -> str:
     inspect_summaries = []
     for container in containers:
         inspect_summaries.append(json.loads(docker_inspect_container(container)))
+
+    logger.info(f"exec docker service status summary, payload: {ps_payload}, inspect_summaries: {inspect_summaries}")
 
     return _json_result(
         bool(ps_payload.get("ok")),
@@ -382,7 +408,6 @@ def docker_restart_container(container_name: str = "", project_dir: str = "", ti
     使用场景:
     - 容器卡死、健康检查异常或需要快速恢复时。
     - 诊断确认后，执行有明确回滚预期的容器重启。
-    - 验证审批链路是否会拦截高危操作。
 
     参数说明:
     - `container_name` (str, optional, default `""`):
@@ -407,6 +432,9 @@ def docker_restart_container(container_name: str = "", project_dir: str = "", ti
     selected_timeout = max(5, min(int(timeout), 120))
 
     result = _run_docker(["restart", selected_container], selected_project_dir, timeout=selected_timeout)
+
+    logger.info(f"exec docker restart container resule: {result}")
+
     return _json_result(
         bool(result.get("ok")),
         project_dir=selected_project_dir,

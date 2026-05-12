@@ -109,6 +109,7 @@ def _context_from_config(
     roles=["admin", "sre", "viewer"],
     tags=["dispatcher"],
     requires_approval=False,
+    description="List available tool groups and actions for current session.",
 )
 def cli_list(
     config: Optional[RunnableConfig] = None,
@@ -150,7 +151,7 @@ def cli_list(
     roles=["admin", "sre", "viewer"],
     tags=["dispatcher"],
     requires_approval=False,
-    description="Get doc string for one action",
+    description="Get docstring for one action.",
 )
 def cli_action_doc(
     action: str,
@@ -209,6 +210,7 @@ def cli_action_doc(
     roles=["admin", "sre", "viewer"],
     tags=["dispatcher"],
     requires_approval=False,
+    description="Execute one action through dispatcher with role/mode checks.",
 )
 def dispatch_tool(
     action: str,

@@ -91,49 +91,6 @@ def check_network_connectivity(target_host: str, port: int, timeout: float = 2.0
 
 
 @register_tool(
-    name="check_db_tcp_connectivity",
-    permission="info",
-    roles=["admin", "sre", "viewer"],
-    tags=["network"],
-)
-def check_db_tcp_connectivity(db_host: str, db_port: int, timeout: float = 2.0):
-    """
-    数据库 TCP 连通性探测工具。
-
-    功能解释:
-    - 本质上是 `check_network_connectivity` 的数据库语义封装。
-    - 只验证数据库端口是否可建立 TCP 连接。
-    - 不包含账号认证、SQL 执行或协议握手语义验证。
-
-    使用场景:
-    - 数据库连接失败时区分“网络层问题”和“认证/权限问题”。
-    - 上线、迁移、扩容后确认数据库端口路径正确。
-    - 用作数据库排障的第一跳。
-
-    参数说明:
-    - `db_host` (str，必填)：
-      - 数据库主机名或 IP。
-    - `db_port` (int，必填)：
-      - 数据库端口。
-    - `timeout` (float，可选，默认 `2.0`)：
-      - 连接超时时间（秒）。
-
-    必填字段:
-    - `db_host`
-    - `db_port`
-
-    调用方法:
-    - 直接调用：`check_db_tcp_connectivity(db_host="10.0.0.12", db_port=3306)`
-    - 指定超时：`check_db_tcp_connectivity(db_host="10.0.0.12", db_port=3306, timeout=3.0)`
-
-    返回关键字段:
-    - 与 `check_network_connectivity` 一致。
-    - 成功时 `status=reachable`，失败时 `status=unreachable`。
-    """
-    return check_network_connectivity(db_host, db_port, timeout)
-
-
-@register_tool(
     name="curl_http_endpoint",
     permission="moderate",
     roles=["admin", "sre", "viewer"],

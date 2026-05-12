@@ -42,6 +42,7 @@ def _result(ok: bool, **extra: Any) -> str:
     permission="info",
     roles=["admin", "sre", "viewer"],
     tags=["actuator"],
+    description="Check /actuator/health and return overall status with component details.",
 )
 def check_actuator_health(base_url: str = "", timeout: float = 3.0) -> str:
     """
@@ -120,6 +121,7 @@ def check_actuator_health(base_url: str = "", timeout: float = 3.0) -> str:
     permission="info",
     roles=["admin", "sre", "viewer"],
     tags=["actuator"],
+    description="List metric names exposed by /actuator/metrics for discovery.",
 )
 def list_actuator_metrics(base_url: str = "", timeout: float = 3.0) -> str:
     """
@@ -180,6 +182,7 @@ def list_actuator_metrics(base_url: str = "", timeout: float = 3.0) -> str:
     permission="info",
     roles=["admin", "sre", "viewer"],
     tags=["actuator"],
+    description="Fetch one actuator metric with measurements and available tags.",
 )
 def get_actuator_metric(metric_name: str, base_url: str = "", timeout: float = 3.0) -> str:
     """
@@ -256,6 +259,7 @@ def get_actuator_metric(metric_name: str, base_url: str = "", timeout: float = 3
     permission="moderate",
     roles=["admin", "sre"],
     tags=["actuator"],
+    description="Get /actuator/threaddump and summarize thread states with samples.",
 )
 def get_actuator_threaddump(base_url: str = "", timeout: float = 5.0) -> str:
     """
