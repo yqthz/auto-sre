@@ -587,8 +587,8 @@ def _validate_report_payload(report_text: str) -> str:
             raise ValueError("timeline.time must be a non-empty string")
         if not _is_iso8601(t):
             raise ValueError("timeline.time must be a valid ISO-8601 string")
-        if src not in {"metric", "log"}:
-            raise ValueError("timeline.source must be metric or log")
+        if not _is_non_empty_string(src):
+            raise ValueError("timeline.source must be a non-empty string")
         if not _is_non_empty_string(event):
             raise ValueError("timeline.event must be a non-empty string")
 

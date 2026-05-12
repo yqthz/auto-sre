@@ -360,3 +360,59 @@ def docker_service_status_summary(project_dir: str = "") -> str:
         compose=ps_payload,
         containers=inspect_summaries,
     )
+
+
+@register_tool(
+    name="docker_restart_container",
+    permission="danger",
+    roles=["admin", "sre"],
+    tags=["docker"],
+    requires_approval=True,
+    description="Restart a docker container (high risk, approval required).",
+)
+def docker_restart_container(container_name: str = "", project_dir: str = "", timeout: int = 20) -> str:
+    """
+    重启指定 Docker 容器，属于高危写操作，必须走审批流程。
+
+    功能解释:
+    - 执行 `docker restart` 重启目标容器。
+    - 直接影响线上进程，可能造成短暂中断或连接重建。
+    - 该工具被标记为 `danger`，并显式要求审批。
+
+    使用场景:
+    - 容器卡死、健康检查异常或需要快速恢复时。
+    - 诊断确认后，执行有明确回滚预期的容器重启。
+    - 验证审批链路是否会拦截高危操作。
+
+    参数说明:
+    - `container_name` (str, optional, default `""`):
+      - 目标容器名。
+      - 为空时使用运行时配置中的主应用容器名。
+    - `project_dir` (str, optional, default `""`):
+      - Docker Compose 项目目录。
+      - 为空时使用运行时配置中的 `profile.compose_project_dir`。
+    - `timeout` (int, optional, default `20`):
+      - 命令超时时间，限制在 `5 ~ 120` 秒。
+
+    返回字段:
+    - `queried_at`: 执行时间。
+    - `ok`: 是否成功。
+    - `container_name`: 实际重启的容器名。
+    - `project_dir`: 实际使用的项目目录。
+    - `stdout` / `stderr` / `error` / `returncode`: 命令输出与失败信息。
+    """
+    profile = get_runtime_profile()
+    selected_container = (container_name or profile.app.container_name).strip()
+    selected_project_dir = project_dir or str(profile.compose_project_dir)
+    selected_timeout = max(5, min(int(timeout), 120))
+
+    result = _run_docker(["restart", selected_container], selected_project_dir, timeout=selected_timeout)
+    return _json_result(
+        bool(result.get("ok")),
+        project_dir=selected_project_dir,
+        container_name=selected_container,
+        stdout=str(result.get("stdout") or "")[:MAX_LOG_CHARS],
+        stderr=str(result.get("stderr") or "")[:4000],
+        error=str(result.get("error") or ""),
+        returncode=result.get("returncode"),
+    )

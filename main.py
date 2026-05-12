@@ -3,12 +3,13 @@ import uvicorn
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from app.api import auth, webhook, chat_session, chat_message, knowledge_base, document, user, alert, audit_log, trace
 from app.core.logger import configure_logging
+
+dotenv.load_dotenv()
 
 configure_logging()
 
-dotenv.load_dotenv()
+from app.api import auth, webhook, chat_session, chat_message, knowledge_base, document, user, alert, audit_log, trace
 
 app = FastAPI(title="auto-sre", version="1.0.0")
 

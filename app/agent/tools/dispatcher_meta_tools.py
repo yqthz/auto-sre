@@ -1,10 +1,11 @@
 import json
-from typing import Any, Dict, Optional
+from typing import Annotated, Any, Dict, Optional
 
 from app.agent.dispatcher.discovery import cli_action_doc_payload, cli_list_payload
 from app.agent.dispatcher.executor import dispatch_action
 from app.agent.tools.security import register_tool
 from langchain_core.runnables import RunnableConfig
+from langgraph.prebuilt import InjectedState
 
 # _DISCOVERY_TTL_SECONDS = 600
 # _MAX_LIST_CALLS_PER_ROUND = 1
@@ -15,15 +16,19 @@ from langchain_core.runnables import RunnableConfig
 # _DISCOVERY_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 
-def _context_from_config(config: Optional[RunnableConfig]) -> tuple[str, str, str, str, str]:
+def _context_from_config(
+    config: Optional[RunnableConfig],
+    state: Optional[Dict[str, Any]] = None,
+) -> tuple[str, str, str, str, str]:
     """从 config 中提取 user_id, user_role, mode, thread_id, trace_run_id"""
     cfg = dict(config or {})
     configurable = dict(cfg.get("configurable") or {})
+    state = state or {}
     user_id = str(configurable.get("user_id") or "unknown")
-    user_role = str(configurable.get("user_role") or "viewer")
-    mode = str(configurable.get("mode") or "manual")
+    user_role = str(configurable.get("user_role") or state.get("user_role") or "viewer")
+    mode = str(configurable.get("mode") or state.get("mode") or "manual")
     thread_id = str(configurable.get("thread_id") or "global")
-    trace_run_id = str(configurable.get("trace_run_id") or "")
+    trace_run_id = str(configurable.get("trace_run_id") or state.get("trace_run_id") or "")
     return user_id, user_role, mode, thread_id, trace_run_id
 
 
@@ -105,7 +110,10 @@ def _context_from_config(config: Optional[RunnableConfig]) -> tuple[str, str, st
     tags=["dispatcher"],
     requires_approval=False,
 )
-def cli_list(config: Optional[RunnableConfig] = None) -> str:
+def cli_list(
+    config: Optional[RunnableConfig] = None,
+    state: Annotated[Optional[Dict[str, Any]], InjectedState()] = None,
+) -> str:
     """
     列出当前会话可用的工具簇与 action。
 
@@ -131,7 +139,7 @@ def cli_list(config: Optional[RunnableConfig] = None) -> str:
     - 每个工具簇包含 `tool` 与 `actions`。
     - 每个 action 包含 `name`、`description`、`risk_level`、`requires_approval`。
     """
-    _user_id, user_role, mode, _thread_id, _trace_run_id = _context_from_config(config)
+    _user_id, user_role, mode, _thread_id, _trace_run_id = _context_from_config(config, state=state)
     payload = cli_list_payload(user_role=user_role, mode=mode)
     return json.dumps(payload, ensure_ascii=False)
 
@@ -144,7 +152,11 @@ def cli_list(config: Optional[RunnableConfig] = None) -> str:
     requires_approval=False,
     description="Get doc string for one action",
 )
-def cli_action_doc(action: str, config: Optional[RunnableConfig] = None) -> str:
+def cli_action_doc(
+    action: str,
+    config: Optional[RunnableConfig] = None,
+    state: Annotated[Optional[Dict[str, Any]], InjectedState()] = None,
+) -> str:
     """
     获取某个 action 的 doc string。
 
@@ -171,7 +183,7 @@ def cli_action_doc(action: str, config: Optional[RunnableConfig] = None) -> str:
     - `doc`：该 action 的 doc string。
     - 找不到或无权限时 `doc` 为空字符串。
     """
-    _user_id, user_role, mode, _thread_id, _trace_run_id = _context_from_config(config)
+    _user_id, user_role, mode, _thread_id, _trace_run_id = _context_from_config(config, state=state)
     payload = cli_action_doc_payload(action=action, user_role=user_role, mode=mode)
     return json.dumps(payload, ensure_ascii=False)
 
@@ -198,7 +210,12 @@ def cli_action_doc(action: str, config: Optional[RunnableConfig] = None) -> str:
     tags=["dispatcher"],
     requires_approval=False,
 )
-def dispatch_tool(action: str, params: Dict[str, Any], config: Optional[RunnableConfig] = None) -> str:
+def dispatch_tool(
+    action: str,
+    params: Dict[str, Any],
+    config: Optional[RunnableConfig] = None,
+    state: Annotated[Optional[Dict[str, Any]], InjectedState()] = None,
+) -> str:
     """
     通过分发器执行指定 action。
 
@@ -228,7 +245,7 @@ def dispatch_tool(action: str, params: Dict[str, Any], config: Optional[Runnable
     - 若权限或参数错误，返回错误结构。
     """
     # 保留上下文提取，便于未来扩展，不在执行层写审计日志。
-    _user_id, user_role, mode, _thread_id, _trace_run_id = _context_from_config(config)
+    _user_id, user_role, mode, _thread_id, _trace_run_id = _context_from_config(config, state=state)
 
     # 执行 action
     payload = dispatch_action(action=action, params=params, user_role=user_role, mode=mode)
