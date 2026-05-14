@@ -34,6 +34,7 @@ LOG_PATTERN = re.compile(
     r"(?P<message>.*)$"
 )
 MESSAGE_FIELD_PATTERN = re.compile(r"(?P<key>method|uri|query|status|costMs|ip|userAgent|remoteAddr)=([^,]+)")
+ROLLED_DATE_PATTERN = re.compile(r"\.(\d{4}-\d{2}-\d{2})\.\d+\.log$", re.IGNORECASE)
 
 
 def _parse_iso_datetime(value: str) -> Optional[datetime]:
@@ -144,14 +145,26 @@ def _normalize_message(line: str) -> str:
 
 
 # TODO: 
+def _extract_rolled_log_date(path: Path) -> Optional[datetime]:
+    match = ROLLED_DATE_PATTERN.search(path.name)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
 def _resolve_log_files(alert_dt: datetime, window_minutes: int) -> Tuple[List[Path], List[str]]:
-    """查找日志文件"""
+    """Find candidate log files by date window first, then fallback to recent files."""
     profile = get_runtime_profile()
     log_dir = profile.app.log_dir
     patterns = profile.app.log_patterns
-    # 计算告警时间窗口
-    # start = alert_dt - timedelta(minutes=window_minutes)
-    # end = alert_dt + timedelta(minutes=window_minutes)
+    start = alert_dt - timedelta(minutes=window_minutes)
+    end = alert_dt + timedelta(minutes=window_minutes)
+    local_tz = _target_timezone()
+    start_local = start.astimezone(local_tz).date()
+    end_local = end.astimezone(local_tz).date()
 
     checked: List[str] = []
     existing_map: Dict[str, Path] = {}
@@ -165,8 +178,26 @@ def _resolve_log_files(alert_dt: datetime, window_minutes: int) -> Tuple[List[Pa
                 existing_map[str(path)] = path
 
     existing = sorted(existing_map.values(), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
-    # Keep the scan bounded but include current and recent rotated files.
-    return existing[:20], checked
+
+    selected: List[Path] = []
+    for path in existing:
+        # Active log file receives current-day writes before rollover.
+        if path.name.endswith(".log") and not ROLLED_DATE_PATTERN.search(path.name):
+            selected.append(path)
+            continue
+
+        rolled_day = _extract_rolled_log_date(path)
+        if not rolled_day:
+            continue
+        if start_local <= rolled_day.date() <= end_local:
+            selected.append(path)
+
+    if not selected:
+        # Fallback for non-standard naming: keep recent files bounded.
+        return existing[:20], checked
+
+    selected = sorted(selected, key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+    return selected[:20], checked
 
 
 def _read_tail_lines(path: Path, limit: int) -> List[str]:
@@ -1168,6 +1199,10 @@ def retrieve_log_context(
     window_minutes = max(1, min(window_minutes, 60))
     context_lines = max(0, min(int(context_lines), MAX_CONTEXT_LINES))
     max_matches = max(1, min(int(max_matches), MAX_CONTEXT_MATCHES))
+    start = alert_dt - timedelta(minutes=window_minutes)
+    end = alert_dt + timedelta(minutes=window_minutes)
+    start = alert_dt - timedelta(minutes=window_minutes)
+    end = alert_dt + timedelta(minutes=window_minutes)
 
     # 计算时间窗口
     start = alert_dt - timedelta(minutes=window_minutes)
@@ -1313,6 +1348,8 @@ def retrieve_log_context_raw(
     window_minutes = max(1, min(window_minutes, 60))
     context_lines = max(0, min(int(context_lines), MAX_CONTEXT_LINES))
     max_matches = max(1, min(int(max_matches), MAX_CONTEXT_MATCHES))
+    start = alert_dt - timedelta(minutes=window_minutes)
+    end = alert_dt + timedelta(minutes=window_minutes)
 
     match_type = (pattern_type or "literal").lower()
     if match_type not in ("literal", "regex"):
@@ -1347,6 +1384,9 @@ def retrieve_log_context_raw(
         lines = _read_tail_lines(path, MAX_SCAN_LINES)
         file_chunks: List[str] = []
         for idx, line in enumerate(lines):
+            line_time = _parse_line_timestamp(line, alert_dt)
+            if line_time and not (start <= line_time <= end):
+                continue
             if not is_match_fn(line):
                 continue
             start_idx = max(0, idx - context_lines)
