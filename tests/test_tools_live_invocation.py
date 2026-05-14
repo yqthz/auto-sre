@@ -108,6 +108,11 @@ class TestToolsLiveInvocation(unittest.TestCase):
             user_role="viewer",
         )
         self.assert_tool_ok("docker.docker_service_status_summary", {}, user_role="viewer")
+        self.assert_tool_ok(
+            "docker.docker_restart_container",
+            {"container_name": self.profile.app.container_name, "timeout": 20},
+            user_role="sre",
+        )
 
     def test_network_tools(self):
         self.assert_tool_ok(
@@ -149,8 +154,43 @@ class TestToolsLiveInvocation(unittest.TestCase):
 
     def test_log_tools(self):
         self.assert_dispatched(
+            "log.overview_log_issues",
+            {"alert_time": self.alert_time, "window_minutes": 5},
+            user_role="viewer",
+        )
+        self.assert_dispatched(
             "log.analyze_log_around_alert",
             {"alert_time": self.alert_time, "window_minutes": 5},
+            user_role="viewer",
+        )
+        self.assert_dispatched(
+            "log.analyze_slow_requests",
+            {
+                "alert_time": self.alert_time,
+                "window_minutes": 5,
+                "min_cost_ms": 1000,
+                "max_requests": 5,
+            },
+            user_role="viewer",
+        )
+        self.assert_dispatched(
+            "log.analyze_error_requests",
+            {
+                "alert_time": self.alert_time,
+                "window_minutes": 5,
+                "min_status": 500,
+                "max_requests": 5,
+            },
+            user_role="viewer",
+        )
+        self.assert_dispatched(
+            "log.aggregate_log_by_trace_id",
+            {"alert_time": self.alert_time, "window_minutes": 5, "max_traces": 10},
+            user_role="viewer",
+        )
+        self.assert_dispatched(
+            "log.aggregate_log_by_uri",
+            {"alert_time": self.alert_time, "window_minutes": 5, "max_uris": 10},
             user_role="viewer",
         )
         self.assert_dispatched(

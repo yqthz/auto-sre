@@ -117,7 +117,18 @@ DEFAULT_ACTION_RETRY_BACKOFF_MULTIPLIER = 2.0
 DEFAULT_ACTION_RETRY_ON_KINDS = ["timeout", "spawn_error", "cli_failed"]     # 重试类型
 MAX_ACTION_TIMEOUT_SECONDS = 120
 
-ACTION_RUNTIME_OVERRIDES: Dict[str, Dict[str, Any]] = {}
+ACTION_RUNTIME_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    # Log analysis actions are frequently I/O bound and may scan large windows.
+    "log.overview_log_issues": {"timeout_seconds": 45},
+    "log.analyze_error_requests": {"timeout_seconds": 45},
+    "log.analyze_log_around_alert": {"timeout_seconds": 45},
+    "log.aggregate_log_by_uri": {"timeout_seconds": 45},
+    "log.retrieve_log_context": {"timeout_seconds": 45},
+    # Actuator endpoint checks often depend on service/network responsiveness.
+    "actuator.check_actuator_health": {"timeout_seconds": 30},
+    # External endpoint curl can be slower under cross-zone/network jitter.
+    "network.curl_http_endpoint": {"timeout_seconds": 30},
+}
 
 
 @dataclass(frozen=True)

@@ -1,8 +1,27 @@
 import argparse
 import json
+import sys
 from typing import Any, Dict
 
 from app.agent.dispatcher.cli_actions import run_cli_action
+
+
+def _configure_stdio_utf8() -> None:
+    """
+    Force UTF-8 stdio for CLI subprocess output, especially on Windows where
+    default code page (e.g. gbk) may fail to encode characters like BOM.
+    """
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+    try:
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 def _print_json(payload: Dict[str, Any]) -> None:
@@ -10,6 +29,8 @@ def _print_json(payload: Dict[str, Any]) -> None:
 
 
 def main() -> int:
+    _configure_stdio_utf8()
+
     parser = argparse.ArgumentParser(prog="agent-dispatcher-cli")
     subparsers = parser.add_subparsers(dest="cmd", required=True)
 

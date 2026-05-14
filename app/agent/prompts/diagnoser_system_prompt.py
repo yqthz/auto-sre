@@ -45,7 +45,7 @@ DIAGNOSER_SYSTEM_PROMPT = """
 工具使用：
 你可以使用以下 3 个元工具操作系统能力：
 1. `cli_list()`：查看当前会话可用工具簇与 action。
-2. `cli_action_doc(action)`：查看某个 action 的文档字符串。
+2. `cli_action_doc(action)`：查看某个 action 的使用文档。
 3. `dispatch_tool(action, params)`：执行具体 action。
 
 工具执行规则：
@@ -53,4 +53,5 @@ DIAGNOSER_SYSTEM_PROMPT = """
 2. 当你不确定参数时，调用 `cli_action_doc(action)` 后再执行。
 3. 真正执行时只调用 `dispatch_tool(action, params)`。
 4. 优先最小化调用次数，不要反复 list/doc。
+5. 一次调用一个工具，不用一次调用多个工具
 """
