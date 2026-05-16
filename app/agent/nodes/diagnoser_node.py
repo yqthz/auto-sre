@@ -575,7 +575,6 @@ def _validate_report_payload(report_text: str) -> str:
 
     if not isinstance(timeline, list) or not timeline:
         raise ValueError("timeline must be a non-empty array")
-    prev_time = None
     for item in timeline:
         if not isinstance(item, dict):
             raise ValueError("each timeline item must be an object")
@@ -585,18 +584,11 @@ def _validate_report_payload(report_text: str) -> str:
         evidence = _extract_evidence_list(item)
         if not _is_non_empty_string(t):
             raise ValueError("timeline.time must be a non-empty string")
-        if not _is_iso8601(t):
-            raise ValueError("timeline.time must be a valid ISO-8601 string")
         if not _is_non_empty_string(src):
             raise ValueError("timeline.source must be a non-empty string")
         if not _is_non_empty_string(event):
             raise ValueError("timeline.event must be a non-empty string")
 
-        time_text = str(t)
-        current_time = datetime.fromisoformat(time_text.replace("Z", "+00:00"))
-        if prev_time and current_time < prev_time:
-            raise ValueError("timeline must be sorted by time ascending")
-        prev_time = current_time
         if not evidence:
             raise ValueError("timeline.evidence must be a non-empty array")
 
